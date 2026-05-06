@@ -1,0 +1,21 @@
+# Entorno virtual
+.venv/
+
+# Datos generados (no compartir — contienen info de clientes)
+data/conciliacion_last.csv
+data/solo_listado_last.csv
+data/solo_arca_last.csv
+data/meta_last.csv
+data/persistencia/
+
+# Archivos de entrada (datos reales)
+*.xls
+*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
