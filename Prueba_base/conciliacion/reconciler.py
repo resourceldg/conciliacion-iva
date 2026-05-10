@@ -131,7 +131,10 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
             return "Sin match en ARCA"
         if row["Conciliado"]:
             return "Conciliado"
-        # Factura C: ARCA no desglosa Neto/IVA, Total derivado → no es diferencia genuina
+        # NC donde Total coincide: el Neto/IVA puede no desglosa (exento) — es conciliado
+        if row["Match_Total"] and row.get("ARCA_es_NC", False):
+            return "Conciliado"
+        # Factura C / exento: ARCA no desglosa Neto/IVA, Total derivado → no es diferencia genuina
         if row["Match_Total"] and row.get("ARCA_Neto_Derivado", False):
             return "Total OK / Sin desglose"
         return "Diferencia detectada"

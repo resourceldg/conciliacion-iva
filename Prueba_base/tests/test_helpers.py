@@ -626,3 +626,70 @@ class TestLoadArca:
         assert df["es_NC"].iloc[0] == True
         assert df["Imp. Total"].iloc[0] < 0
         assert df["Neto_Total_ARCA"].iloc[0] < 0
+
+
+# ── Reconciler: NC exento concilia por Total ──────────────────────────────────
+
+class TestReconcilerNC:
+    def _listado_nc_exento(self):
+        """Simula NC del Libro IVA con Neto=0 (exento), Total negativo."""
+        return pd.DataFrame([{
+            "Comprobante": "00151-00118219",
+            "Tipo": "NCC-A", "Tipo_Doc": "NC A", "Origen": "Nacional",
+            "CUIT_DNI": "30682737650", "CUIT_norm": "30682737650",
+            "Razon_Social": "PROV SA",
+            "Neto": 0.0, "IVA": 0.0, "Total": -184337.30,
+        }])
+
+    def _arca_nc_exento(self):
+        """Simula ARCA NC exento con Neto derivado del Total."""
+        return pd.DataFrame([{
+            "Comprobante_Key": "00151-00118219",
+            "CUIT_norm": "30682737650",
+            "Neto_Total_ARCA": -184337.30,
+            "Total IVA": 0.0,
+            "Otros Tributos": 0.0,
+            "Imp. Total": -184337.30,
+            "Fecha": "2026-03-01",
+            "Tipo_Doc_ARCA": "Nota de Crédito A",
+            "Denominación Emisor": "PROV SA",
+            "Nro. Doc. Emisor": "30682737650",
+            "es_NC": True,
+            "neto_derivado": True,
+        }])
+
+    def test_nc_exento_concilia_por_total(self):
+        from conciliacion.reconciler import conciliar
+        s1, _, _ = conciliar(self._listado_nc_exento(), self._arca_nc_exento(), 0.07)
+        assert s1["Estado"].iloc[0] == "Conciliado"
+
+    def test_nc_con_neto_iva_completo_concilia(self):
+        from conciliacion.reconciler import conciliar
+        l = pd.DataFrame([{
+            "Comprobante": "00002-00000099", "Tipo": "NCC-A", "Tipo_Doc": "NC A",
+            "Origen": "Nacional", "CUIT_DNI": "30123456789", "CUIT_norm": "30123456789",
+            "Razon_Social": "PROV SA", "Neto": -660000.0, "IVA": -138600.0, "Total": -798600.0,
+        }])
+        a = pd.DataFrame([{
+            "Comprobante_Key": "00002-00000099", "CUIT_norm": "30123456789",
+            "Neto_Total_ARCA": -660000.0, "Total IVA": -138600.0, "Otros Tributos": 0.0,
+            "Imp. Total": -798600.0, "Fecha": "2026-03-01", "Tipo_Doc_ARCA": "Nota de Crédito A",
+            "Denominación Emisor": "PROV SA", "Nro. Doc. Emisor": "30123456789",
+            "es_NC": True, "neto_derivado": False,
+        }])
+        s1, _, _ = conciliar(l, a, 0.07)
+        assert s1["Estado"].iloc[0] == "Conciliado"
+
+    def test_nc_sin_match_arca(self):
+        from conciliacion.reconciler import conciliar
+        l = pd.DataFrame([{
+            "Comprobante": "00003-00000515", "Tipo": "NCC-A", "Tipo_Doc": "NC A",
+            "Origen": "Nacional", "CUIT_DNI": "30714732540", "CUIT_norm": "30714732540",
+            "Razon_Social": "PROV SA", "Neto": -420000.0, "IVA": -88200.0, "Total": -508200.0,
+        }])
+        a = pd.DataFrame(columns=["Comprobante_Key", "CUIT_norm", "Neto_Total_ARCA",
+                                   "Total IVA", "Otros Tributos", "Imp. Total", "Fecha",
+                                   "Tipo_Doc_ARCA", "Denominación Emisor", "Nro. Doc. Emisor",
+                                   "es_NC", "neto_derivado"])
+        s1, _, _ = conciliar(l, a, 0.07)
+        assert s1["Estado"].iloc[0] == "Sin match en ARCA"
