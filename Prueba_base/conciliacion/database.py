@@ -90,6 +90,22 @@ def init_db():
             nota             TEXT,
             data_json        TEXT
         );
+        CREATE TABLE IF NOT EXISTS semantic_aliases (
+            canonical  TEXT NOT NULL,
+            synonym    TEXT NOT NULL,
+            direction  TEXT DEFAULT 'both',
+            use_count  INTEGER DEFAULT 1,
+            last_seen  TEXT,
+            PRIMARY KEY (canonical, synonym)
+        );
+        CREATE TABLE IF NOT EXISTS mapping_profiles (
+            id           TEXT PRIMARY KEY,
+            name         TEXT NOT NULL,
+            profile_json TEXT NOT NULL,
+            use_count    INTEGER DEFAULT 0,
+            created_at   TEXT,
+            updated_at   TEXT
+        );
     """)
     con.commit()
     con.close()
@@ -485,3 +501,138 @@ def cargar_historico(ts: str):
         return s1, s2, s3
     except Exception:
         return None, None, None
+
+
+# ── Aliases semánticos aprendidos ─────────────────────────────────────────────
+
+def guardar_alias(canonical: str, synonym: str, direction: str = "both") -> bool:
+    """Registra o incrementa un alias semántico aprendido del usuario.
+
+    canonical: nombre de campo semántico (ej: "Razón Social")
+    synonym:   nombre real encontrado en el archivo (ej: "Proveedor")
+    direction: 'left' | 'right' | 'both'
+    """
+    con = None
+    try:
+        con = _db_con()
+        con.execute(
+            """
+            INSERT INTO semantic_aliases (canonical, synonym, direction, use_count, last_seen)
+            VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(canonical, synonym) DO UPDATE SET
+                use_count = use_count + 1,
+                last_seen = excluded.last_seen,
+                direction = excluded.direction
+            """,
+            (canonical, synonym, direction, datetime.now().isoformat()),
+        )
+        con.commit()
+        return True
+    except Exception as e:
+        print(f"[ERROR guardar_alias] {e}", file=sys.stderr)
+        return False
+    finally:
+        if con:
+            con.close()
+
+
+def cargar_aliases() -> dict[str, list[str]]:
+    """Lee todos los aliases semánticos guardados.
+
+    Retorna {canonical: [synonym, ...]} ordenados por use_count descendente.
+    """
+    try:
+        con  = _db_con()
+        rows = con.execute(
+            "SELECT canonical, synonym FROM semantic_aliases ORDER BY use_count DESC"
+        ).fetchall()
+        con.close()
+        result: dict[str, list[str]] = {}
+        for row in rows:
+            result.setdefault(row["canonical"], []).append(row["synonym"])
+        return result
+    except Exception:
+        return {}
+
+
+# ── Perfiles semánticos completos ─────────────────────────────────────────────
+
+def guardar_perfil(profile) -> bool:
+    """Persiste un MappingProfile completo (incluye fingerprints y rules).
+
+    Guarda en mapping_profiles (tabla nueva) y también en mapeos para
+    compatibilidad con el panel de perfiles de la UI existente.
+    """
+    con = None
+    try:
+        d    = profile.to_dict() if hasattr(profile, "to_dict") else profile
+        name = d.get("name", "")
+        pid  = d.get("id", name)
+        now  = datetime.now().isoformat()
+
+        con = _db_con()
+        con.execute(
+            """
+            INSERT INTO mapping_profiles (id, name, profile_json, use_count, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name         = excluded.name,
+                profile_json = excluded.profile_json,
+                use_count    = use_count + 1,
+                updated_at   = excluded.updated_at
+            """,
+            (pid, name, json.dumps(d, ensure_ascii=False), d.get("use_count", 0),
+             d.get("created_at", now), now),
+        )
+        # Compat: guardar también en tabla mapeos con columnas_l/a para UI legacy
+        rules_by_lc = {r["l_campo"]: r["left_columns"] for r in d.get("rules", []) if r.get("l_campo")}
+        rules_by_ac = {r["a_campo"]: r["right_columns"] for r in d.get("rules", []) if r.get("a_campo")}
+        cols_l = {lc: (v[0] if len(v) == 1 else v) for lc, v in rules_by_lc.items() if v}
+        cols_a = {ac: (v[0] if len(v) == 1 else v) for ac, v in rules_by_ac.items() if v}
+        compat_config = {"columnas_l": cols_l, "columnas_a": cols_a, "profile_id": pid}
+        con.execute(
+            "INSERT OR REPLACE INTO mapeos (nombre, config_json, actualizado) VALUES (?,?,?)",
+            (name, json.dumps(compat_config, ensure_ascii=False), now),
+        )
+        con.commit()
+        return True
+    except Exception as e:
+        print(f"[ERROR guardar_perfil] {e}", file=sys.stderr)
+        return False
+    finally:
+        if con:
+            con.close()
+
+
+def cargar_perfiles() -> list:
+    """Carga todos los MappingProfile guardados, ordenados por uso reciente."""
+    try:
+        from .models import MappingProfile
+        con  = _db_con()
+        rows = con.execute(
+            "SELECT profile_json FROM mapping_profiles ORDER BY updated_at DESC"
+        ).fetchall()
+        con.close()
+        result = []
+        for row in rows:
+            try:
+                result.append(MappingProfile.from_dict(json.loads(row["profile_json"])))
+            except Exception:
+                pass
+        return result
+    except Exception:
+        return []
+
+
+def registrar_uso_perfil(profile_id: str):
+    """Incrementa el contador de uso de un perfil para priorizar sugerencias."""
+    try:
+        con = _db_con()
+        con.execute(
+            "UPDATE mapping_profiles SET use_count = use_count + 1, updated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), profile_id),
+        )
+        con.commit()
+        con.close()
+    except Exception:
+        pass

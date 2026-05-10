@@ -6,11 +6,17 @@ Incluye:
   - _detectar_cols_multi: retorna todas las columnas que coinciden con un prefijo
   - sugerir_mapeo: pipeline de 4 pasos (exact → norm → alias → fuzzy) para mapear
                    columnas reales a campos semánticos esperados
+  - build_mapping_rules: convierte res_l + res_a + GRUPOS_PAREJAS en lista de MappingRule
   - Fallbacks de columnas conocidas para Listado y ARCA
 
 El pipeline de sugerencia evita asignaciones duplicadas (una columna solo puede
 mapearse a un campo), y distingue la confianza del match para mostrar alertas en
 la UI sin bloquear el procesamiento.
+
+build_mapping_rules formaliza el modelo N:M: cada campo del GRUPOS_PAREJAS genera
+una MappingRule con sus columnas reales, operador y tipo de comparación. Esto permite
+al motor de conciliación y a la UI trabajar con un modelo semántico explícito en lugar
+de convenciones implícitas.
 """
 import difflib
 
@@ -124,3 +130,78 @@ def sugerir_mapeo(cols_archivo: list, campos_esperados: dict,
         confianzas[campo]  = nivel if col_enc else "none"
 
     return sugerencias, confianzas
+
+
+# ── Construcción formal de MappingRules ──────────────────────────────────────
+
+def build_mapping_rules(
+    res_l: dict,
+    res_a: dict,
+    grupos: list | None = None,
+    tolerancia: float = 0.07,
+) -> list:
+    """Convierte el mapeo usuario en una lista de MappingRule formales.
+
+    Cada campo de GRUPOS_PAREJAS se convierte en una MappingRule que captura:
+      - Las columnas reales seleccionadas por el usuario (N izquierda, M derecha)
+      - El operador semántico del campo (sum, concat, identity…)
+      - El modo de comparación (exact, approx)
+      - El tipo semántico (importe, cuit, comprobante…)
+
+    Esto permite al motor de conciliación y a la UI trabajar con un modelo
+    explícito en lugar de convenciones implícitas esparcidas por el código.
+
+    Retorna lista de conciliacion.models.MappingRule.
+    """
+    from .models import MappingRule
+    from .constants import GRUPOS_PAREJAS as _GRUPOS_DEFAULT
+
+    if grupos is None:
+        grupos = _GRUPOS_DEFAULT
+
+    rules: list[MappingRule] = []
+    for grupo in grupos:
+        for campo in grupo["campos"]:
+            lc  = campo.get("l_campo")
+            ac  = campo.get("a_campo")
+            op  = campo.get("operation",     "identity")
+            cmp = campo.get("comparison",    "approx")
+            sem = campo.get("semantic_type", "texto")
+            req = campo.get("required",      True)
+
+            left_val  = res_l.get(lc, "") if lc else None
+            right_val = res_a.get(ac, "") if ac else None
+
+            # Normalizar a lista (el usuario puede haber seleccionado múltiples)
+            left_cols  = left_val  if isinstance(left_val,  list) else ([left_val]  if left_val  else [])
+            right_cols = right_val if isinstance(right_val, list) else ([right_val] if right_val else [])
+
+            # Columnas ARCA implícitas (ej: punto_venta + numero para Comprobante)
+            for impl in campo.get("a_implícitos", []):
+                impl_val = res_a.get(impl, "")
+                if impl_val and impl_val not in right_cols:
+                    right_cols.append(impl_val)
+
+            if not left_cols and not right_cols:
+                continue
+
+            tol = tolerancia if (cmp == "approx" and sem == "importe") else 0.0
+
+            rule = MappingRule(
+                id=f"{lc or 'x'}_{ac or 'x'}",
+                label=campo.get("label", "").rstrip(" *"),
+                left_columns=left_cols,
+                right_columns=right_cols,
+                operation=op,
+                comparison=cmp,
+                tolerance=tol,
+                semantic_type=sem,
+                required=req,
+                confidence=1.0,
+                affects_status=req,
+                l_campo=lc or "",
+                a_campo=ac or "",
+            )
+            rules.append(rule)
+
+    return rules

@@ -61,6 +61,9 @@ from conciliacion.exporter import generar_excel
 from conciliacion.ui_helpers import (
     APP_CSS, _NO_MAPEAR, _csv_download, _fmt_bool, _render_mapeo_parejas,
 )
+from conciliacion.session import SessionManager
+from conciliacion.column_mapping import build_mapping_rules
+from conciliacion.fingerprint import fingerprint_dataframe
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 
@@ -150,57 +153,83 @@ with st.sidebar:
         (src_listado, "ml", CAMPOS_LISTADO, ALIASES_LISTADO, "Comprobante"),
         (src_arca,    "ma", CAMPOS_ARCA,    ALIASES_ARCA,    "Punto de Venta"),
     ]:
-        if _fsrc is not None:
-            _fid = (
-                f"{_fsrc.name}_{_fsrc.size}" if hasattr(_fsrc, "name")
-                else str(_fsrc)
-            )
-            if st.session_state.get(f"{_kp}_file_id") != _fid:
-                for _rk in ["loaded", "s1", "s2", "s3", "correcciones",
-                             "periodo_actual", "sel_hist_key"]:
-                    st.session_state.pop(_rk, None)
-                _label = "Listado" if _kp == "ml" else "ARCA"
-                with st.spinner(f"Leyendo {_label}..."):
-                    _cols = _detectar_columnas(_fsrc, _hkw, _fb_map[_kp])
-                    if hasattr(_fsrc, "seek"):
-                        _fsrc.seek(0)
-                    if _kp == "ml":
-                        _fmt_ml = _detectar_formato_colppy(_fsrc)
-                        if hasattr(_fsrc, "seek"):
-                            _fsrc.seek(0)
-                        st.session_state["ml_formato"] = _fmt_ml
-                    else:
-                        _fmt_ml = None
-                if _cols:
-                    _sug, _conf = sugerir_mapeo(_cols, _campos, _aliases)
-                    _multi_override = {"ml": ["neto", "iva"], "ma": ["total_iva"]}
-                    for _mc in _multi_override.get(_kp, []):
-                        _all_mc = _detectar_cols_multi(_cols, _mc)
-                        if len(_all_mc) > 1:
-                            _sug[_mc]  = _all_mc
-                            _conf[_mc] = "multi"
-                    st.session_state[f"{_kp}_sug"]  = _sug
-                    st.session_state[f"{_kp}_conf"] = _conf
-                    st.session_state[f"{_kp}_cols"] = _cols
-                    for _ck in list(_campos.keys()):
-                        st.session_state.pop(f"{_kp}_{_ck}", None)
-                    if _fmt_ml == "libro":
-                        st.success(
-                            f"📖 Libro IVA Compras detectado — {len(_cols)} columnas. "
-                            "Las columnas se mapean **automáticamente**."
-                        )
-                    else:
-                        st.success(f"{_label} listo — {len(_cols)} columnas detectadas.", icon="✅")
-                else:
-                    st.session_state.pop(f"{_kp}_cols", None)
-                    st.session_state.pop("ml_formato", None)
-                    st.warning(
-                        f"No se detectaron columnas en el {_label}. "
-                        "Verificá que el archivo sea el formato correcto."
-                    )
+        if _fsrc is None:
+            continue
+        _fid = (
+            f"{_fsrc.name}_{_fsrc.size}" if hasattr(_fsrc, "name")
+            else str(_fsrc)
+        )
+        if not SessionManager.file_changed(_kp, _fid):
+            continue
+
+        # Invalidar estado derivado de este lado
+        SessionManager.invalidate_file(_kp)
+
+        _label = "Listado" if _kp == "ml" else "ARCA"
+        with st.spinner(f"Leyendo {_label}..."):
+            _cols = _detectar_columnas(_fsrc, _hkw, _fb_map[_kp])
+            if hasattr(_fsrc, "seek"):
+                _fsrc.seek(0)
+            if _kp == "ml":
+                _fmt_ml = _detectar_formato_colppy(_fsrc)
                 if hasattr(_fsrc, "seek"):
                     _fsrc.seek(0)
-                st.session_state[f"{_kp}_file_id"] = _fid
+                st.session_state["ml_formato"] = _fmt_ml
+            else:
+                _fmt_ml = None
+
+        if _cols:
+            _sug, _conf = sugerir_mapeo(_cols, _campos, _aliases)
+            _multi_override = {"ml": ["neto", "iva"], "ma": ["total_iva"]}
+            for _mc in _multi_override.get(_kp, []):
+                _all_mc = _detectar_cols_multi(_cols, _mc)
+                if len(_all_mc) > 1:
+                    _sug[_mc]  = _all_mc
+                    _conf[_mc] = "multi"
+            st.session_state[f"{_kp}_sug"]  = _sug
+            st.session_state[f"{_kp}_conf"] = _conf
+            st.session_state[f"{_kp}_cols"] = _cols
+
+            # Fingerprinting estadístico de columnas (para detección semántica y perfiles)
+            _fp_key = "left_fingerprints" if _kp == "ml" else "right_fingerprints"
+            try:
+                import pandas as _pd
+                # Leer solo el encabezado y unas filas para fingerprint rápido
+                from conciliacion.file_reader import leer_excel, _mejor_hoja, _find_header
+                _raw = leer_excel(_fsrc)
+                if hasattr(_fsrc, "seek"):
+                    _fsrc.seek(0)
+                _sheet = _mejor_hoja(_raw)
+                _hr    = _find_header(_sheet, _hkw, _fb_map[_kp])
+                if _hr is not None:
+                    _df_sample = _sheet.iloc[_hr + 1 : _hr + 51].copy()
+                    _df_sample.columns = [str(c).strip() for c in _sheet.iloc[_hr]]
+                    _fps = fingerprint_dataframe(_df_sample)
+                    st.session_state[_fp_key] = {
+                        k: v.to_dict() for k, v in _fps.items()
+                    }
+                if hasattr(_fsrc, "seek"):
+                    _fsrc.seek(0)
+            except Exception:
+                pass
+
+            if _fmt_ml == "libro":
+                st.success(
+                    f"📖 Libro IVA Compras detectado — {len(_cols)} columnas. "
+                    "Las columnas se mapean **automáticamente**."
+                )
+            else:
+                st.success(f"{_label} listo — {len(_cols)} columnas detectadas.", icon="✅")
+        else:
+            st.session_state.pop(f"{_kp}_cols", None)
+            st.session_state.pop("ml_formato", None)
+            st.warning(
+                f"No se detectaron columnas en el {_label}. "
+                "Verificá que el archivo sea el formato correcto."
+            )
+        if hasattr(_fsrc, "seek"):
+            _fsrc.seek(0)
+        SessionManager.mark_file_processed(_kp, _fid)
 
     # ── Reglas de memoria por CUIT ────────────────────────────────────────────
     reglas_sidebar = _reglas_cuit_global
@@ -260,6 +289,9 @@ if _tiene_archivos:
             _res_l, _res_a = _render_mapeo_parejas(_cols_l, _cols_a, mapeos_db=_mapeos_global)
             st.session_state["mapeo_listado"] = {"header_keyword": "Comprobante",    "columnas": _res_l}
             st.session_state["mapeo_arca"]    = {"header_keyword": "Punto de Venta", "columnas": _res_a}
+            # Construir y guardar MappingRules formales para el motor y la persistencia
+            _rules = build_mapping_rules(_res_l, _res_a, tolerancia=tolerancia)
+            SessionManager.set_mapping_rules(_rules)
         elif _cols_l:
             st.info("Cargá también el archivo de ARCA para ver el emparejamiento.")
         elif _cols_a:

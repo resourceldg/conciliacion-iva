@@ -37,6 +37,10 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     """
     extra_cols = extra_cols or []
 
+    # Normalizar índices para evitar IndexingError en mascaras booleanas
+    df_listado = df_listado.reset_index(drop=True)
+    df_arca    = df_arca.reset_index(drop=True)
+
     # Deduplicar ARCA — avisa pero no falla
     dupes = df_arca[df_arca.duplicated("Comprobante_Key", keep=False)]
     if not dupes.empty:

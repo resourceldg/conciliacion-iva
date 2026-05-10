@@ -38,7 +38,10 @@ FEEDBACK_FILE = DATA_DIR / "feedback.jsonl"
 # ── Columnas booleanas ────────────────────────────────────────────────────────
 
 # Necesitan conversión explícita al releer desde JSON/CSV
-BOOL_COLS = {"Existe_en_ARCA", "Match_Neto", "Match_IVA", "Match_Total", "Conciliado", "es_NC"}
+BOOL_COLS = {
+    "Existe_en_ARCA", "Match_Neto", "Match_IVA", "Match_Total", "Conciliado",
+    "es_NC", "ARCA_es_NC", "ARCA_Neto_Derivado", "neto_derivado",
+}
 
 # ── Tipos de comprobante especiales ──────────────────────────────────────────
 
@@ -161,18 +164,24 @@ GRUPOS_PAREJAS = [
         "detalle": "Determinan qué comprobante del Listado corresponde a cuál de ARCA",
         "campos": [
             {
-                "label":        "Comprobante *",
-                "l_campo":      "comprobante",
-                "a_campo":      None,
-                "a_fijo":       "Pto. Venta + Número (construido automáticamente)",
-                "a_implícitos": ["punto_venta", "numero"],
-                "required":     True,
+                "label":         "Comprobante *",
+                "l_campo":       "comprobante",
+                "a_campo":       None,
+                "a_fijo":        "Pto. Venta + Número (construido automáticamente)",
+                "a_implícitos":  ["punto_venta", "numero"],
+                "required":      True,
+                "operation":     "identity",
+                "comparison":    "exact",
+                "semantic_type": "comprobante",
             },
             {
-                "label":    "CUIT proveedor *",
-                "l_campo":  "cuit",
-                "a_campo":  "cuit_emisor",
-                "required": True,
+                "label":         "CUIT proveedor *",
+                "l_campo":       "cuit",
+                "a_campo":       "cuit_emisor",
+                "required":      True,
+                "operation":     "identity",
+                "comparison":    "exact",
+                "semantic_type": "cuit",
             },
         ],
     },
@@ -180,21 +189,71 @@ GRUPOS_PAREJAS = [
         "titulo":  "💰 Importes comparados",
         "detalle": "Requeridos para la conciliación — las diferencias determinan el estado",
         "campos": [
-            {"label": "Neto *",  "l_campo": "neto",  "a_campo": "neto_gravado",
-             "required": True, "multi_l": True},
-            {"label": "IVA *",   "l_campo": "iva",   "a_campo": "total_iva",
-             "required": True, "multi_l": True, "multi_a": True},
-            {"label": "Total *", "l_campo": "total", "a_campo": "total",
-             "required": True, "multi_l": True, "multi_a": True},
+            {
+                "label":         "Neto *",
+                "l_campo":       "neto",
+                "a_campo":       "neto_gravado",
+                "required":      True,
+                "multi_l":       True,
+                "operation":     "sum",
+                "comparison":    "approx",
+                "semantic_type": "importe",
+            },
+            {
+                "label":         "IVA *",
+                "l_campo":       "iva",
+                "a_campo":       "total_iva",
+                "required":      True,
+                "multi_l":       True,
+                "multi_a":       True,
+                "operation":     "sum",
+                "comparison":    "approx",
+                "semantic_type": "importe",
+            },
+            {
+                "label":         "Total *",
+                "l_campo":       "total",
+                "a_campo":       "total",
+                "required":      True,
+                "multi_l":       True,
+                "multi_a":       True,
+                "operation":     "sum",
+                "comparison":    "approx",
+                "semantic_type": "importe",
+            },
         ],
     },
     {
         "titulo":  "ℹ️ Información adicional",
         "detalle": "Opcional — visible en la tabla, no afecta el cruce",
         "campos": [
-            {"label": "Fecha",        "l_campo": "fecha",        "a_campo": "fecha",        "required": False},
-            {"label": "Tipo",         "l_campo": "tipo",         "a_campo": "tipo",         "required": False},
-            {"label": "Razón Social", "l_campo": "razon_social", "a_campo": "denominacion", "required": False},
+            {
+                "label":         "Fecha",
+                "l_campo":       "fecha",
+                "a_campo":       "fecha",
+                "required":      False,
+                "operation":     "identity",
+                "comparison":    "exact",
+                "semantic_type": "fecha",
+            },
+            {
+                "label":         "Tipo",
+                "l_campo":       "tipo",
+                "a_campo":       "tipo",
+                "required":      False,
+                "operation":     "identity",
+                "comparison":    "exact",
+                "semantic_type": "texto",
+            },
+            {
+                "label":         "Razón Social",
+                "l_campo":       "razon_social",
+                "a_campo":       "denominacion",
+                "required":      False,
+                "operation":     "identity",
+                "comparison":    "contains",
+                "semantic_type": "texto",
+            },
         ],
     },
 ]

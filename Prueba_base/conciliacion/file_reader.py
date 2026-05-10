@@ -180,20 +180,31 @@ def _find_header(sheet: pd.DataFrame, keyword: str,
 
 
 def _detectar_formato_colppy(source) -> str:
-    """Retorna 'libro' si el archivo es Libro IVA Compras, 'listado' en otro caso.
+    """Retorna 'libro', 'tango' o 'listado' según el formato del archivo.
 
-    Detecta el formato por nombre de hoja o por presencia de columnas características
-    del Libro IVA Compras (Suc. + Letra).
+    - 'tango':   columnas N_COMP y T_COMP en la primera fila (export de Tango)
+    - 'libro':   Libro IVA Compras de Colppy/Xubio (hoja 'libro iva' o Suc.+Letra)
+    - 'listado': Listado IVA Compras estándar de Colppy (default)
     """
     try:
         raw = leer_excel(source)
         if hasattr(source, "seek"):
             source.seek(0)
+        sheet = _mejor_hoja(raw)
+        header = sheet.iloc[0].astype(str).str.lower()
+        if header.str.contains("n_comp", na=False).any() or header.str.contains("t_comp", na=False).any():
+            return "tango"
+        # Pasión ERP: columnas "tipo comprob." y "nº comprob." en fila 0
+        if (header.str.contains(r"tipo\s+comprob", na=False, regex=True).any()
+                and header.str.contains(r"n[º°]\s*comprob", na=False, regex=True).any()):
+            return "pasion"
+        # Subdiario de Compras (Contabilium / Finnegans): columna "n° de comprobante" o "tipo de documento"
+        if (header.str.contains(r"n[°o]\s*de\s*comprobante", na=False, regex=True).any()
+                or header.str.contains("tipo de documento", na=False).any()):
+            return "subdiario"
         for name in raw:
             if "libro" in str(name).lower() and "iva" in str(name).lower():
                 return "libro"
-        sheet = _mejor_hoja(raw)
-        header = sheet.iloc[0].astype(str).str.lower()
         if header.str.contains(r"suc\.", na=False).any() and header.str.contains("letra", na=False).any():
             return "libro"
     except Exception:

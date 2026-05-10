@@ -42,7 +42,10 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
     raw   = leer_excel(source)
     sheet = _mejor_hoja(raw)
 
-    hr = _find_header(sheet, "Suc.", ["Comprobante", "Numero", "Proveedor", "Nro.Doc."])
+    # Buscar header priorizando "Comprobante" (Variante B) y "Suc." (Variante A).
+    # "Suc." puede aparecer en nombres de empresa en filas de datos, generando
+    # un falso positivo si se busca primero.
+    hr = _find_header(sheet, "Comprobante", ["Suc.", "Numero", "Proveedor", "Nro.Doc."])
     if hr is None:
         hr = 0
     header_cols = [str(c).strip() for c in sheet.iloc[hr]]
@@ -145,7 +148,311 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
 
     n = len(agg)
     st.info(f"Libro IVA Compras detectado — {n} comprobantes cargados.", icon="📖")
-    return agg
+    return agg.reset_index(drop=True)
+
+
+def _load_subdiario_iva(source) -> "pd.DataFrame | None":
+    """Carga el Subdiario de Compras exportado de Contabilium o Finnegans.
+
+    Formato: header en fila 0, columnas por alícuota (Neto gravado 21%, Iva 21%…).
+    N° de comprobante tiene formato 'A-00001-00354190' o '0007-26032026'.
+    Una fila por comprobante (no hay múltiples filas por alícuota).
+    """
+    raw   = leer_excel(source)
+    sheet = _mejor_hoja(raw)
+
+    df = sheet.copy()
+    df.columns = [str(c).strip() for c in sheet.iloc[0]]
+    df = df.iloc[1:].reset_index(drop=True)
+
+    comp_raw = df.get("N° de comprobante", df.get("N°  de comprobante", pd.Series("", index=df.index))).astype(str).str.strip()
+
+    def _parse_comp(s: str) -> str:
+        import re
+        m = re.match(r"^[A-Za-z]-(\d{1,5})-(\d{1,8})$", s)
+        if m:
+            return m.group(1).zfill(5) + "-" + m.group(2).zfill(8)
+        m2 = re.match(r"^(\d{1,5})-(\d{1,8})$", s)
+        if m2:
+            return m2.group(1).zfill(5) + "-" + m2.group(2).zfill(8)
+        return ""
+
+    df["Comprobante"] = comp_raw.apply(_parse_comp)
+    df = df[df["Comprobante"].str.match(r"^\d{5}-\d{8}$", na=False)].copy()
+
+    if df.empty:
+        st.error("No se encontraron comprobantes válidos en el Subdiario de Compras.")
+        return None
+
+    def _map_subdiario_tipo(t: str) -> str:
+        t = str(t).upper()
+        # Extraer letra del final: "001-FC A" → letra "A"
+        letra = t[-1] if t and t[-1].isalpha() else "A"
+        if "NC" in t:
+            return f"NCC-{letra}"
+        if "ND" in t:
+            return f"NDB-{letra}"
+        if "FC" in t or "FAC" in t:
+            return f"FAC-{letra}"
+        return f"FAC-{letra}"
+
+    tipo_raw = df.get("Tipo de documento", pd.Series("", index=df.index)).astype(str)
+    df["Tipo"] = tipo_raw.apply(_map_subdiario_tipo)
+
+    df["Fecha_Factura"] = df.get("Fecha contable",   pd.Series("", index=df.index))
+    df["CUIT_DNI"]      = df.get("Cuit",             pd.Series("", index=df.index)).astype(str).str.strip()
+    df["Razon_Social"]  = df.get("Proveedor",        pd.Series("", index=df.index))
+    df["Condicion_IVA"] = df.get("Cat. fiscal",      pd.Series("", index=df.index))
+
+    # Neto: suma de todos los "Neto gravado X%" + "No gravado"
+    neto_cols = [c for c in df.columns if re.match(r"neto\s+gravado", c.lower())]
+    no_grav   = [c for c in df.columns if re.match(r"no\s+gravado", c.lower())]
+    all_neto  = neto_cols + no_grav
+    df["Neto"] = (
+        sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in all_neto)
+        if all_neto else pd.Series(0.0, index=df.index)
+    )
+
+    # IVA: suma de todos los "Iva X%"
+    iva_cols = [c for c in df.columns if re.match(r"iva\s+[\d,.]", c.lower())]
+    df["IVA"] = (
+        sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in iva_cols)
+        if iva_cols else pd.Series(0.0, index=df.index)
+    )
+
+    df["Total"] = pd.to_numeric(df.get("Total", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0)
+
+    agg = df.groupby("Comprobante", as_index=False).agg(
+        Fecha_Factura=("Fecha_Factura", "first"),
+        Tipo=("Tipo", "first"),
+        CUIT_DNI=("CUIT_DNI", "first"),
+        Razon_Social=("Razon_Social", "first"),
+        Condicion_IVA=("Condicion_IVA", "first"),
+        Neto=("Neto", "sum"),
+        IVA=("IVA", "sum"),
+        Total=("Total", _agg_total),
+    )
+
+    agg["Origen"]    = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
+    agg["CUIT_norm"] = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+
+    _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
+    for _nc_col in ["Neto", "IVA", "Total"]:
+        agg.loc[_nc_mask, _nc_col] = -agg.loc[_nc_mask, _nc_col].abs()
+
+    tipo_label = {
+        "FAC-A": "Factura A", "FAC-B": "Factura B", "FAC-C": "Factura C",
+        "FAC-E": "Fact. Exterior",
+        "NCC-A": "NC A", "NCC-B": "NC B", "NCC-C": "NC C",
+        "NDB-A": "ND A", "NDB-B": "ND B", "NDB-C": "ND C",
+    }
+    agg["Tipo_Doc"] = agg["Tipo"].map(tipo_label).fillna(agg["Tipo"])
+
+    n = len(agg)
+    st.info(f"Subdiario de Compras detectado — {n} comprobantes cargados.", icon="📋")
+    return agg.reset_index(drop=True)
+
+
+def _load_pasion_iva(source) -> "pd.DataFrame | None":
+    """Carga el libro IVA Compras exportado de Pasión ERP.
+
+    Formato: header en fila 0, columnas 'Tipo Comprob.' + 'L' (letra) + 'Nº Comprob.'.
+    Nº Comprob. ya tiene formato XXXXX-YYYYYYYY. NC ya vienen con signo negativo.
+    Neto = Imp. Gravado + GRAV 5% (neto gravado por alícuota).
+    IVA  = Imp.IVA (columna pre-agregada).
+    """
+    raw   = leer_excel(source)
+    sheet = _mejor_hoja(raw)
+
+    df = sheet.copy()
+    df.columns = [str(c).strip() for c in sheet.iloc[0]]
+    df = df.iloc[1:].reset_index(drop=True)
+
+    # Pasión puede exportar decimales con coma (ej. "3195164,07") en algunas columnas
+    def _to_num(col: "pd.Series") -> "pd.Series":
+        return pd.to_numeric(
+            col.astype(str).str.replace(",", ".", regex=False).str.replace(r"\s", "", regex=True),
+            errors="coerce",
+        ).fillna(0)
+
+    # Comprobante: "Nº Comprob." ya en formato XXXXX-YYYYYYYY
+    comp_col = next((c for c in df.columns if re.match(r"n[º°]\s*comprob", c.lower())), None)
+    if comp_col is None:
+        st.error("No se encontró la columna 'Nº Comprob.' en el archivo Pasión.")
+        return None
+
+    comp_raw = df[comp_col].astype(str).str.strip()
+    # Normalizar: "0001-00000321" → "00001-00000321" (zero-pad cada parte)
+    def _norm_comp(s: str) -> str:
+        m = re.match(r"^(\d{1,5})-(\d{1,8})$", s.strip())
+        if m:
+            return m.group(1).zfill(5) + "-" + m.group(2).zfill(8)
+        return ""
+    df["Comprobante"] = comp_raw.apply(_norm_comp)
+    df = df[df["Comprobante"].str.match(r"^\d{5}-\d{8}$", na=False)].copy()
+
+    if df.empty:
+        st.error("No se encontraron comprobantes válidos en el archivo Pasión.")
+        return None
+
+    # Tipo: "Tipo Comprob." (FACTURA / N/CREDITO / N/DEBITO) + "L" (letra A/B/C)
+    tipo_col  = next((c for c in df.columns if re.match(r"tipo\s+comprob", c.lower())), None)
+    letra_col = "L" if "L" in df.columns else None
+
+    def _map_pasion_tipo(t: str, l: str) -> str:
+        t = str(t).strip().upper()
+        l = str(l).strip().upper() if l else "A"
+        if not l or l == "NAN":
+            l = "A"
+        if "CRED" in t or t in ("NC", "N/C", "NCC"):
+            return f"NCC-{l}"
+        if "DEB" in t or t in ("ND", "N/D", "NDB"):
+            return f"NDB-{l}"
+        return f"FAC-{l}"
+
+    letras = df[letra_col].astype(str) if letra_col else pd.Series("A", index=df.index)
+    tipos  = df[tipo_col].astype(str) if tipo_col else pd.Series("FACTURA", index=df.index)
+    df["Tipo"] = [_map_pasion_tipo(t, l) for t, l in zip(tipos, letras)]
+
+    df["Fecha_Factura"] = df.get("Fecha Comprobante", df.get("Fecha", pd.Series("", index=df.index)))
+    df["CUIT_DNI"]      = df.get("C.U.I.T.", pd.Series("", index=df.index)).astype(str).str.strip()
+    df["Razon_Social"]  = df.get("Nombre del Proveedor", pd.Series("", index=df.index))
+    df["Condicion_IVA"] = df.get("Tipo Responsable", pd.Series("", index=df.index))
+
+    # Neto: gravado + exento + no gravado (ARCA los agrupa en Neto_Total_ARCA)
+    neto_cols = (
+        [c for c in df.columns if re.match(r"imp\.?\s*gravado", c.lower())]
+        + [c for c in df.columns if re.match(r"grav\s+\d", c.lower())]
+        + [c for c in df.columns if re.match(r"imp\.?\s*exento", c.lower())]
+        + [c for c in df.columns if re.match(r"imp\.?\s*monotrib", c.lower())]
+    )
+    df["Neto"] = (
+        sum(_to_num(df[c]) for c in neto_cols)
+        if neto_cols else pd.Series(0.0, index=df.index)
+    )
+
+    # IVA: columna "Imp.IVA" pre-agregada (puede tener coma decimal)
+    iva_col = next((c for c in df.columns if re.match(r"imp\.?\s*iva", c.lower())), None)
+    if iva_col is None:
+        # fallback: suma IVA Fact. + IVA Diferencial + IVA 27%
+        iva_cols = [c for c in df.columns if re.match(r"iva\s", c.lower()) or c.lower() == "iva fact."]
+        df["IVA"] = (
+            sum(_to_num(df[c]) for c in iva_cols)
+            if iva_cols else pd.Series(0.0, index=df.index)
+        )
+    else:
+        df["IVA"] = _to_num(df[iva_col])
+
+    df["Total"] = _to_num(df.get("Total", pd.Series(0.0, index=df.index)))
+
+    agg = df.groupby("Comprobante", as_index=False).agg(
+        Fecha_Factura=("Fecha_Factura", "first"),
+        Tipo=("Tipo", "first"),
+        CUIT_DNI=("CUIT_DNI", "first"),
+        Razon_Social=("Razon_Social", "first"),
+        Condicion_IVA=("Condicion_IVA", "first"),
+        Neto=("Neto", "sum"),
+        IVA=("IVA", "sum"),
+        Total=("Total", _agg_total),
+    )
+
+    agg["Origen"]    = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
+    agg["CUIT_norm"] = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+
+    _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
+    for _nc_col in ["Neto", "IVA", "Total"]:
+        agg.loc[_nc_mask, _nc_col] = -agg.loc[_nc_mask, _nc_col].abs()
+
+    tipo_label = {
+        "FAC-A": "Factura A", "FAC-B": "Factura B", "FAC-C": "Factura C",
+        "FAC-E": "Fact. Exterior",
+        "NCC-A": "NC A", "NCC-B": "NC B", "NCC-C": "NC C",
+        "NDB-A": "ND A", "NDB-B": "ND B", "NDB-C": "ND C",
+    }
+    agg["Tipo_Doc"] = agg["Tipo"].map(tipo_label).fillna(agg["Tipo"])
+
+    n = len(agg)
+    st.info(f"Pasión ERP detectado — {n} comprobantes cargados.", icon="📋")
+    return agg.reset_index(drop=True)
+
+
+def _load_tango_iva(source) -> "pd.DataFrame | None":
+    """Carga el libro IVA Compras exportado de Tango Gestión.
+
+    Formato: header en fila 0, columnas T_COMP / N_COMP / IDENTIFTRI / etc.
+    N_COMP tiene formato Letra(1) + PtoVta(5) + Num(8), ej. 'A0262100624528'.
+    Puede haber varias filas por comprobante (una por alícuota de IVA).
+    """
+    raw   = leer_excel(source)
+    sheet = _mejor_hoja(raw)
+
+    df = sheet.copy()
+    df.columns = [str(c).strip() for c in sheet.iloc[0]]
+    df = df.iloc[1:].reset_index(drop=True)
+
+    # Filtrar filas sin N_COMP válido (filas de totales al final)
+    comp_raw = df["N_COMP"].astype(str).str.strip()
+    valid_comp = comp_raw.str.match(r"^[A-Za-z]\d{13}$")
+    df = df[valid_comp].copy()
+
+    if df.empty:
+        st.error("No se encontraron comprobantes válidos en el archivo Tango.")
+        return None
+
+    # Construir clave XXXXX-YYYYYYYY desde N_COMP
+    df["Comprobante"] = comp_raw[valid_comp].str[1:6] + "-" + comp_raw[valid_comp].str[6:14]
+    df["_letra"]      = comp_raw[valid_comp].str[0].str.upper().fillna("A")
+
+    # Tipo: "FAC" → "FAC-A", "N/C" → "NCC-A", etc.
+    t_comp = df["T_COMP"].astype(str).str.strip().str.upper()
+    def _map_tango_tipo(t: str, l: str) -> str:
+        if t in ("N/C", "NCC", "NC"):
+            return f"NCC-{l}"
+        if t in ("N/D", "NDB", "ND"):
+            return f"NDB-{l}"
+        return f"FAC-{l}"
+    df["Tipo"] = [_map_tango_tipo(t, l) for t, l in zip(t_comp, df["_letra"])]
+
+    df["Fecha_Factura"] = df.get("FECHA_EMI", pd.Series("", index=df.index))
+    df["CUIT_DNI"]      = df.get("IDENTIFTRI", pd.Series("", index=df.index)).astype(str).str.strip()
+    df["Razon_Social"]  = df.get("NOM_PROVE",  pd.Series("", index=df.index))
+    df["Condicion_IVA"] = df.get("COND_IVA",   pd.Series("", index=df.index))
+
+    # Neto = gravado + exento (para comparar con Neto_Total_ARCA de ARCA)
+    neto_grav = pd.to_numeric(df.get("IMP_NETO",   pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+    neto_exen = pd.to_numeric(df.get("IMP_EXENTO", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+    df["Neto"]  = neto_grav + neto_exen
+    df["IVA"]   = pd.to_numeric(df.get("IMP_IVA",   pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+    df["Total"] = pd.to_numeric(df.get("IMP_TOTAL", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+
+    agg = df.groupby("Comprobante", as_index=False).agg(
+        Fecha_Factura=("Fecha_Factura", "first"),
+        Tipo=("Tipo", "first"),
+        CUIT_DNI=("CUIT_DNI", "first"),
+        Razon_Social=("Razon_Social", "first"),
+        Condicion_IVA=("Condicion_IVA", "first"),
+        Neto=("Neto", "sum"),
+        IVA=("IVA", "sum"),
+        Total=("Total", _agg_total),
+    )
+
+    agg["Origen"]    = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
+    agg["CUIT_norm"] = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+
+    _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
+    for _nc_col in ["Neto", "IVA", "Total"]:
+        agg.loc[_nc_mask, _nc_col] = -agg.loc[_nc_mask, _nc_col].abs()
+
+    tipo_label = {
+        "FAC-A": "Factura A", "FAC-B": "Factura B", "FAC-C": "Factura C",
+        "NCC-A": "NC A", "NCC-B": "NC B", "NCC-C": "NC C",
+        "NDB-A": "ND A", "NDB-B": "ND B", "NDB-C": "ND C",
+    }
+    agg["Tipo_Doc"] = agg["Tipo"].map(tipo_label).fillna(agg["Tipo"])
+
+    n = len(agg)
+    st.info(f"Tango Gestión detectado — {n} comprobantes cargados.", icon="📋")
+    return agg.reset_index(drop=True)
 
 
 def load_listado_iva(source, mapeo: dict | None = None):
@@ -159,7 +466,7 @@ def load_listado_iva(source, mapeo: dict | None = None):
        por alícuota de IVA), y toma el primer Total no-cero.
     4. Clasifica el origen (Nacional / Exterior) y aplica etiquetas legibles.
 
-    Si detecta formato Libro IVA Compras, delega a _load_libro_iva.
+    Si detecta formato Libro IVA Compras o Tango, delega al loader correspondiente.
     Retorna un DataFrame con una fila por comprobante, o None si el archivo
     no tiene el formato esperado.
     """
@@ -173,6 +480,12 @@ def load_listado_iva(source, mapeo: dict | None = None):
         source.seek(0)
     if fmt == "libro":
         return _load_libro_iva(source)
+    if fmt == "tango":
+        return _load_tango_iva(source)
+    if fmt == "subdiario":
+        return _load_subdiario_iva(source)
+    if fmt == "pasion":
+        return _load_pasion_iva(source)
 
     raw   = leer_excel(source)
     sheet = _mejor_hoja(raw)
@@ -259,7 +572,7 @@ def load_listado_iva(source, mapeo: dict | None = None):
     }
     agg["Tipo_Doc"] = agg["Tipo"].map(tipo_label).fillna(agg["Tipo"])
 
-    return agg
+    return agg.reset_index(drop=True)
 
 
 def load_arca(source, mapeo: dict | None = None):
@@ -332,14 +645,28 @@ def load_arca(source, mapeo: dict | None = None):
         df["es_NC"] = False
         col_tipo = None
     signo = df["es_NC"].map({True: -1, False: 1})
+
+    # Conversión de moneda extranjera → pesos.
+    # ARCA exporta los importes en la moneda original; "Tipo Cambio" es el TC
+    # del día del comprobante. Se multiplica solo las filas con Moneda != "$".
+    _PESOS = {"$", "pes", "ars"}
+    if "Tipo Cambio" in df.columns and "Moneda" in df.columns:
+        tc = pd.to_numeric(df["Tipo Cambio"], errors="coerce").fillna(1)
+        es_ext = ~df["Moneda"].astype(str).str.strip().str.lower().isin(_PESOS)
+        tc_factor = tc.where(es_ext, 1.0)
+        df["Moneda_orig"]   = df["Moneda"]
+        df["Tipo_Cambio_orig"] = tc
+    else:
+        tc_factor = pd.Series(1.0, index=df.index)
+
     for col_i in COLS_IMPORTE:
         if col_i in df.columns:
-            df[col_i] = df[col_i] * signo
+            df[col_i] = df[col_i] * signo * tc_factor
 
     for _xc in mapeo.get("extra_cols", []):
         _xcol_a = _xc.get("col_a", "")
         if _xcol_a and _xcol_a in df.columns and _xcol_a not in COLS_IMPORTE:
-            df[_xcol_a] = pd.to_numeric(df[_xcol_a], errors="coerce").fillna(0) * signo
+            df[_xcol_a] = pd.to_numeric(df[_xcol_a], errors="coerce").fillna(0) * signo * tc_factor
 
     c_ng  = c.get("neto_gravado",    "Neto Gravado Total")
     c_nng = c.get("neto_no_gravado", "Neto No Gravado")
@@ -354,13 +681,38 @@ def load_arca(source, mapeo: dict | None = None):
         + df.get(c_oe,  pd.Series(0, index=df.index))
     )
 
-    sin_desglose = (df["Neto_Total_ARCA"] == 0) & (df.get(c_tot, pd.Series(0, index=df.index)) != 0)
+    _col_tot_series = df.get(c_tot, pd.Series(0.0, index=df.index))
+
+    # ARCA a veces pone el mismo importe exento/no-gravado en múltiples columnas
+    # (ej: mismo valor en Neto Gravado Total Y Op. Exentas), duplicando el neto.
+    # Si el neto calculado supera el total en más de 1%, es doble conteo:
+    # derivar neto = Total − IVA − OtrosTrib.
+    _col_tiva_s = df.get(c_tiva, pd.Series(0.0, index=df.index))
+    _col_ot_s   = df.get(c_ot,   pd.Series(0.0, index=df.index))
+    _doble_conteo = (
+        df["Neto_Total_ARCA"].abs() > _col_tot_series.abs() * 1.01
+    ) & (_col_tot_series.abs() > 0)
+    if _doble_conteo.any():
+        df.loc[_doble_conteo, "Neto_Total_ARCA"] = (
+            _col_tot_series[_doble_conteo]
+            - _col_tiva_s[_doble_conteo]
+            - _col_ot_s[_doble_conteo]
+        )
+
+    sin_desglose = (df["Neto_Total_ARCA"] == 0) & (_col_tot_series != 0)
     df.loc[sin_desglose, "Neto_Total_ARCA"] = (
         df.loc[sin_desglose, c_tot]
         - df.loc[sin_desglose, c_tiva]
         - df.loc[sin_desglose, c_ot]
     )
-    df["neto_derivado"] = sin_desglose
+    # Marcar como derivado: Factura C (sin desglose), doble conteo, y comprobantes
+    # donde el importe es íntegramente exento/no-gravado (Neto Gravado ≈ 0).
+    # En estos casos el Listado/Libro IVA tiene Neto=0 por diseño — solo el Total es comparable.
+    _c_ng_s  = df.get(c_ng,  pd.Series(0.0, index=df.index)).abs()
+    _c_nng_s = df.get(c_nng, pd.Series(0.0, index=df.index)).abs()
+    _c_oe_s  = df.get(c_oe,  pd.Series(0.0, index=df.index)).abs()
+    _solo_exento = (_c_ng_s <= 0.01) & ((_c_nng_s + _c_oe_s) > 0.01)
+    df["neto_derivado"] = sin_desglose | _doble_conteo | _solo_exento
 
     tipo_label_arca = {
         "1 - Factura A":         "Factura A",
@@ -392,7 +744,14 @@ def load_arca(source, mapeo: dict | None = None):
         col_std[c_cuit] = "Nro. Doc. Emisor"
     if c_denom and c_denom in df.columns:
         col_std[c_denom] = "Denominación Emisor"
-    df = df.rename(columns={k: v for k, v in col_std.items() if k != v})
+    _renames = {k: v for k, v in col_std.items() if k != v}
+    # Drop existing target columns before rename to prevent duplicate axis labels.
+    # This happens when the user maps an individual alícuota column (e.g. "IVA 21%")
+    # to a standard name ("Total IVA") that already exists as a pre-aggregated column.
+    _drop_before_rename = [v for k, v in _renames.items() if v in df.columns]
+    if _drop_before_rename:
+        df = df.drop(columns=_drop_before_rename)
+    df = df.rename(columns=_renames)
 
     for _opt in ["Fecha", "Tipo", "Denominación Emisor"]:
         if _opt not in df.columns:
@@ -400,4 +759,4 @@ def load_arca(source, mapeo: dict | None = None):
 
     df["CUIT_norm"] = df.get("Nro. Doc. Emisor", pd.Series("", index=df.index)).astype(str).str.replace(r"[^0-9]", "", regex=True)
 
-    return df
+    return df.reset_index(drop=True)
