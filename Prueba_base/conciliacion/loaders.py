@@ -650,8 +650,8 @@ def load_arca(source, mapeo: dict | None = None):
     df.columns.name = None
     df.columns = [str(c).strip() for c in df.columns]
 
-    col_pto  = col.get("punto_venta", "Punto de Venta")
-    col_num  = col.get("numero",      "Número Desde")
+    col_pto  = col.get("punto_venta", "Punto de Venta") or "Punto de Venta"
+    col_num  = col.get("numero",      "Número Desde")  or "Número Desde"
     _missing = [c for c in [col_pto, col_num] if c not in df.columns]
     if _missing:
         st.error(f"Columnas no encontradas en el archivo ARCA: {_missing}. Revisá el emparejamiento de columnas.")
@@ -712,12 +712,12 @@ def load_arca(source, mapeo: dict | None = None):
         if _xcol_a and _xcol_a in df.columns and _xcol_a not in COLS_IMPORTE:
             df[_xcol_a] = pd.to_numeric(df[_xcol_a], errors="coerce").fillna(0) * signo * tc_factor
 
-    c_ng  = c.get("neto_gravado",    "Neto Gravado Total")
-    c_nng = c.get("neto_no_gravado", "Neto No Gravado")
-    c_oe  = c.get("op_exentas",      "Op. Exentas")
-    c_ot  = c.get("otros_tributos",  "Otros Tributos")
-    c_tiva = c.get("total_iva",      "Total IVA")
-    c_tot  = c.get("total",          "Imp. Total")
+    c_ng  = c.get("neto_gravado",    "Neto Gravado Total") or "Neto Gravado Total"
+    c_nng = c.get("neto_no_gravado", "Neto No Gravado")    or "Neto No Gravado"
+    c_oe  = c.get("op_exentas",      "Op. Exentas")        or "Op. Exentas"
+    c_ot  = c.get("otros_tributos",  "Otros Tributos")     or "Otros Tributos"
+    c_tiva = c.get("total_iva",      "Total IVA")          or "Total IVA"
+    c_tot  = c.get("total",          "Imp. Total")         or "Imp. Total"
 
     df["Neto_Total_ARCA"] = (
         df.get(c_ng,  pd.Series(0, index=df.index))
