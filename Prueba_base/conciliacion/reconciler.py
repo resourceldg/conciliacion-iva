@@ -89,6 +89,52 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
         right_on=["ARCA_Key", "ARCA_CUIT_norm"],
         how="left",
     )
+
+    # ── Fallback: mismo comprobante, CUIT vía NroDoc_norm ────────────────────
+    # Cuando el CUIT registrado en el Listado difiere del Nro. Doc. Emisor de ARCA
+    # (ej.: Benvido), se reintenta el join usando la columna Nro. Doc. del Listado.
+    if "NroDoc_norm" in listado_nac.columns:
+        _unm_mask = merged_nac["ARCA_Key"].isna()
+        if _unm_mask.any():
+            _used_keys   = set(merged_nac["ARCA_Key"].dropna())
+            _arca_for_fb = arca_slim[~arca_slim["ARCA_Key"].isin(_used_keys)]
+            _unm_comps   = set(merged_nac.loc[_unm_mask, "Comprobante"])
+            _unm_l       = listado_nac[listado_nac["Comprobante"].isin(_unm_comps)].copy()
+            if not _unm_l.empty and not _arca_for_fb.empty:
+                _fb = pd.merge(
+                    _unm_l, _arca_for_fb,
+                    left_on=["Comprobante", "NroDoc_norm"],
+                    right_on=["ARCA_Key", "ARCA_CUIT_norm"],
+                    how="left",
+                )
+                merged_nac = pd.concat(
+                    [merged_nac[~_unm_mask], _fb],
+                    ignore_index=True, sort=False,
+                )
+
+    # ── Fallback 2: solo Comprobante — CUIT difiere ──────────────────────────
+    # Para Libro IVA Compras y otros formatos donde el CUIT registrado en el
+    # Listado (Nro.Doc.) difiere del Nro. Doc. Emisor de ARCA pero el número
+    # de comprobante sí coincide. Se matchea igual para que la detección de
+    # CUIT mismatch pueda marcarlos como "CUIT no coincide".
+    _unm_mask_cuit = merged_nac["ARCA_Key"].isna()
+    if _unm_mask_cuit.any():
+        _used_keys_c   = set(merged_nac["ARCA_Key"].dropna())
+        _arca_for_cuit = arca_slim[~arca_slim["ARCA_Key"].isin(_used_keys_c)]
+        _unm_comps_c   = set(merged_nac.loc[_unm_mask_cuit, "Comprobante"])
+        _unm_l_c       = listado_nac[listado_nac["Comprobante"].isin(_unm_comps_c)].copy()
+        if not _unm_l_c.empty and not _arca_for_cuit.empty:
+            _fb_cuit = pd.merge(
+                _unm_l_c, _arca_for_cuit,
+                left_on="Comprobante",
+                right_on="ARCA_Key",
+                how="left",
+            )
+            merged_nac = pd.concat(
+                [merged_nac[~_unm_mask_cuit], _fb_cuit],
+                ignore_index=True, sort=False,
+            )
+
     merged_ext = pd.merge(
         listado_ext, arca_slim,
         left_on="Comprobante",
@@ -108,6 +154,21 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     merged["Match_IVA"]   = merged["Existe_en_ARCA"] & (merged["Dif_IVA"]   <= tol)
     merged["Match_Total"] = merged["Existe_en_ARCA"] & (merged["Dif_Total"] <= tol)
     merged["Conciliado"]  = merged["Match_Neto"] & merged["Match_IVA"] & merged["Match_Total"]
+
+    # Otros Tributos — OR lógico: Match si ARCA.Otros Tributos ≈ CUALQUIERA columna candidata.
+    # No afecta Conciliado (informativo). Las columnas candidatas vienen del df attrs.
+    _ot_candidatos = [
+        c for c in df_listado.attrs.get("otros_tributos_cols", [])
+        if c in merged.columns
+    ]
+    if _ot_candidatos and "ARCA_OtrosTrib" in merged.columns:
+        _arca_ot = merged["ARCA_OtrosTrib"].fillna(0)
+        _diffs = pd.concat(
+            [(merged[c].fillna(0) - _arca_ot).abs() for c in _ot_candidatos],
+            axis=1,
+        )
+        merged["Dif_OtrosTrib"]   = _diffs.min(axis=1)
+        merged["Match_OtrosTrib"] = merged["Existe_en_ARCA"] & (_diffs.min(axis=1) <= tol)
 
     # Comparaciones adicionales de alícuotas (informativas)
     _xtra_sheet_cols: list[str] = []
@@ -141,6 +202,33 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
 
     merged["Estado"] = merged.apply(_estado, axis=1)
 
+    # ── Comprobantes con CUIT distinto entre Listado y ARCA ──────────────────
+    # Un CUIT diferente al de ARCA es un error grave: el comprobante NO puede
+    # quedar como "Conciliado" aunque los importes coincidan. Requiere corrección
+    # manual en el sistema contable.
+    if "ARCA_CUIT_norm" in merged.columns:
+        _origen_nac = (
+            merged.get("Origen", pd.Series("Nacional", index=merged.index)) == "Nacional"
+        )
+        _cuit_mismatch = (
+            merged["Existe_en_ARCA"]
+            & _origen_nac
+            & (merged["CUIT_norm"].fillna("") != merged["ARCA_CUIT_norm"].fillna(""))
+            & merged["CUIT_norm"].str.len().gt(0)
+            & merged["ARCA_CUIT_norm"].str.len().gt(0)
+        )
+        merged["CUIT_mismatch"] = _cuit_mismatch
+        if _cuit_mismatch.any():
+            merged.loc[_cuit_mismatch, "Estado"] = "CUIT no coincide"
+            n_cd = int(_cuit_mismatch.sum())
+            st.warning(
+                f"⚠️ {n_cd} comprobante(s) con CUIT diferente al de ARCA — "
+                "no pueden conciliarse hasta corregir el CUIT en el sistema contable.",
+                icon="🚨",
+            )
+    else:
+        merged["CUIT_mismatch"] = False
+
     sheet1 = merged[[c for c in [
         "Estado", "Comprobante", "Fecha_Factura", "Tipo_Doc", "Origen",
         "CUIT_DNI", "CUIT_norm", "Razon_Social",
@@ -150,6 +238,8 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
         "ARCA_Neto", "ARCA_IVA", "ARCA_OtrosTrib", "ARCA_Total",
         "Dif_Neto", "Dif_IVA", "Dif_Total",
         "Match_Neto", "Match_IVA", "Match_Total", "Conciliado",
+        "CUIT_mismatch",
+        "Dif_OtrosTrib", "Match_OtrosTrib",
     ] + _xtra_sheet_cols if c in merged.columns]].copy()
 
     # Comprobantes solo en Listado

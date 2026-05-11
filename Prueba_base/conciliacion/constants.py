@@ -40,7 +40,7 @@ FEEDBACK_FILE = DATA_DIR / "feedback.jsonl"
 # Necesitan conversión explícita al releer desde JSON/CSV
 BOOL_COLS = {
     "Existe_en_ARCA", "Match_Neto", "Match_IVA", "Match_Total", "Conciliado",
-    "es_NC", "ARCA_es_NC", "ARCA_Neto_Derivado", "neto_derivado",
+    "es_NC", "ARCA_es_NC", "ARCA_Neto_Derivado", "neto_derivado", "CUIT_mismatch",
 }
 
 # ── Tipos de comprobante especiales ──────────────────────────────────────────
@@ -58,6 +58,7 @@ ESTADO_ICON = {
     "Conciliado":              "✅ Conciliado",
     "Total OK / Sin desglose": "🟡 Total OK s/desglose",
     "Diferencia detectada":    "🔴 Diferencia",
+    "CUIT no coincide":        "⚠️ CUIT no coincide",
     "Sin match en ARCA":       "⬜ Sin match",
     "Exterior / No en ARCA":   "🌐 Exterior s/ARCA",
     "Revisado / Aceptado":     "✔️ Revisado / Aceptado",
@@ -68,15 +69,16 @@ ICON_ESTADO = {v: k for k, v in ESTADO_ICON.items()}
 
 # Campos semánticos → nombre de columna por defecto en el Listado (Colppy)
 CAMPOS_LISTADO = {
-    "comprobante":   "Comprobante",
-    "fecha":         "Fecha Factura",
-    "tipo":          "Tipo",
-    "cuit":          "CUIT/DNI",
-    "razon_social":  "Razón Social",
-    "condicion_iva": "Condición IVA",
-    "neto":          "Neto",
-    "iva":           "IVA",
-    "total":         "Total",
+    "comprobante":      "Comprobante",
+    "fecha":            "Fecha Factura",
+    "tipo":             "Tipo",
+    "cuit":             "CUIT/DNI",
+    "razon_social":     "Razón Social",
+    "condicion_iva":    "Condición IVA",
+    "neto":             "Neto",
+    "iva":              "IVA",
+    "total":            "Total",
+    "otros_tributos_l": "",
 }
 
 # Campos semánticos → nombre de columna por defecto en ARCA
@@ -123,9 +125,15 @@ ALIASES_LISTADO: dict[str, list[str]] = {
                       "nro documento", "nrodoc", "nro.doc.", "nro.doc", "nrodoc."],
     "razon_social":  ["razon social", "razon", "proveedor", "nombre", "denominacion"],
     "condicion_iva": ["condicion iva", "cond iva", "condicion", "condicioniva", "tipo iva"],
-    "neto":          ["neto", "importe neto", "monto neto", "neto gravado", "gravado"],
-    "iva":           ["iva", "importe iva", "monto iva", "iva 21%", "iva 10.5%", "iva 27%"],
-    "total":         ["total", "importe total", "monto total", "total factura"],
+    "neto":             ["neto", "importe neto", "monto neto", "neto gravado", "gravado"],
+    "iva":              ["iva", "importe iva", "monto iva", "iva 21%", "iva 10.5%", "iva 27%"],
+    "total":            ["total", "importe total", "monto total", "total factura"],
+    "otros_tributos_l": ["perc iibb", "perc.iibb", "percepcion iibb", "percepción iibb",
+                         "perc iva", "perc.iva", "percepcion iva", "percepción iva",
+                         "perc gan", "perc.gan", "percepcion ganancias", "ganancias",
+                         "ret iva", "ret.iva", "retencion iva", "retención iva",
+                         "imp int", "imp.int", "impuesto interno", "imp interno",
+                         "otros tributos", "otros trib", "percepciones", "retenciones"],
 }
 
 ALIASES_ARCA: dict[str, list[str]] = {
@@ -221,6 +229,16 @@ GRUPOS_PAREJAS = [
                 "comparison":    "approx",
                 "semantic_type": "importe",
             },
+            {
+                "label":         "Otros Tributos",
+                "l_campo":       "otros_tributos_l",
+                "a_campo":       "otros_tributos",
+                "required":      False,
+                "multi_l":       True,
+                "operation":     "sum",
+                "comparison":    "approx",
+                "semantic_type": "importe",
+            },
         ],
     },
     {
@@ -259,7 +277,7 @@ GRUPOS_PAREJAS = [
 ]
 
 # Campos ARCA que se usan internamente pero no se muestran como parejas
-_ARCA_INTERNOS = ["neto_no_gravado", "op_exentas", "otros_tributos"]
+_ARCA_INTERNOS = ["neto_no_gravado", "op_exentas"]
 
 # Ranking y badges de confianza para el panel de emparejamiento
 _CONF_RANK = {"exact": 0, "norm": 1, "multi": 1, "alias": 2, "fuzzy": 3, "none": 4}

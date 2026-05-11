@@ -180,7 +180,7 @@ with st.sidebar:
 
         if _cols:
             _sug, _conf = sugerir_mapeo(_cols, _campos, _aliases)
-            _multi_override = {"ml": ["neto", "iva"], "ma": ["total_iva"]}
+            _multi_override = {"ml": ["neto", "iva", "otros_tributos_l"], "ma": ["total_iva"]}
             for _mc in _multi_override.get(_kp, []):
                 _all_mc = _detectar_cols_multi(_cols, _mc)
                 if len(_all_mc) > 1:
@@ -441,17 +441,23 @@ if st.session_state.get("loaded"):
         s1_export["Conciliado"] = s1_export["Estado"] == "Conciliado"
 
     # KPIs
-    n_l    = len(s1_export)
-    n_a    = len(s3) + int(s1_export["Existe_en_ARCA"].sum())
-    n_conc = int(s1_export["Conciliado"].sum())
-    n_sdes = int((s1_export["Estado"] == "Total OK / Sin desglose").sum())
-    n_dif  = int((s1_export["Estado"] == "Diferencia detectada").sum())
-    n_sl   = int((~s1_export["Existe_en_ARCA"]).sum())
-    n_sa   = len(s3)
-    n_nc   = int(s1_export.get("ARCA_es_NC", pd.Series(dtype=bool)).sum())
-    n_ext  = int((s1_export["Estado"] == "Exterior / No en ARCA").sum())
-    n_rev  = int((s1_export["Estado"] == "Revisado / Aceptado").sum())
+    n_l       = len(s1_export)
+    n_a       = len(s3) + int(s1_export["Existe_en_ARCA"].sum())
+    n_conc    = int(s1_export["Conciliado"].sum())
+    n_sdes    = int((s1_export["Estado"] == "Total OK / Sin desglose").sum())
+    n_dif     = int((s1_export["Estado"] == "Diferencia detectada").sum())
+    n_sl      = int((~s1_export["Existe_en_ARCA"]).sum())
+    n_sa      = len(s3)
+    n_nc      = int(s1_export.get("ARCA_es_NC", pd.Series(dtype=bool)).sum())
+    n_ext     = int((s1_export["Estado"] == "Exterior / No en ARCA").sum())
+    n_rev     = int((s1_export["Estado"] == "Revisado / Aceptado").sum())
+    n_cuit_dif = int((s1_export["Estado"] == "CUIT no coincide").sum())
 
+    _kpi_cuit = (
+        f'<div class="kpi or"><div class="n">{n_cuit_dif}</div>'
+        f'<div class="l">CUIT difiere</div></div>'
+        if n_cuit_dif else ""
+    )
     st.markdown(f"""
     <div class="kpi-row">
       <div class="kpi bl"><div class="n">{n_l}</div><div class="l">Listado</div></div>
@@ -459,6 +465,7 @@ if st.session_state.get("loaded"):
       <div class="kpi ok"><div class="n">{n_conc}</div><div class="l">Conciliados</div></div>
       <div class="kpi gr"><div class="n">{n_sdes}</div><div class="l">Total OK s/desg.</div></div>
       <div class="kpi or"><div class="n">{n_dif}</div><div class="l">Con diferencias</div></div>
+      {_kpi_cuit}
       <div class="kpi re"><div class="n">{n_sl}</div><div class="l">Solo Listado</div></div>
       <div class="kpi re"><div class="n">{n_sa}</div><div class="l">Solo ARCA</div></div>
       <div class="kpi pu"><div class="n">{n_nc}</div><div class="l">NC ARCA</div></div>
@@ -558,7 +565,7 @@ if st.session_state.get("loaded"):
         if solo_memoria:
             d1 = d1[d1["Memoria"] == True]
 
-        d1_disp = _fmt_bool(d1, ["Existe_en_ARCA", "Match_Neto", "Match_IVA", "Match_Total", "Conciliado", "ARCA_es_NC"])
+        d1_disp = _fmt_bool(d1, ["Existe_en_ARCA", "Match_Neto", "Match_IVA", "Match_Total", "Conciliado", "ARCA_es_NC", "Match_OtrosTrib"])
         if "Memoria" in d1_disp.columns:
             d1_disp["Memoria"] = d1_disp["Memoria"].map({True: "📋", False: ""})
 
@@ -577,9 +584,11 @@ if st.session_state.get("loaded"):
             "ARCA_OtrosTrib":     st.column_config.NumberColumn("Otros Trib ARCA", format="$ %.2f"),
             "ARCA_Total":         st.column_config.NumberColumn("Total ARCA",      format="$ %.2f"),
             "ARCA_Neto_Derivado": st.column_config.TextColumn("Neto Der.", width="small"),
-            "Dif_Neto":    st.column_config.NumberColumn("Δ Neto",  format="$ %.2f"),
-            "Dif_IVA":     st.column_config.NumberColumn("Δ IVA",   format="$ %.2f"),
-            "Dif_Total":   st.column_config.NumberColumn("Δ Total", format="$ %.2f"),
+            "Dif_Neto":       st.column_config.NumberColumn("Δ Neto",       format="$ %.2f"),
+            "Dif_IVA":        st.column_config.NumberColumn("Δ IVA",        format="$ %.2f"),
+            "Dif_Total":      st.column_config.NumberColumn("Δ Total",       format="$ %.2f"),
+            "Dif_OtrosTrib":  st.column_config.NumberColumn("Δ Otros Trib.", format="$ %.2f"),
+            "Match_OtrosTrib": st.column_config.TextColumn("M.OT", width="small"),
             "Existe_en_ARCA": st.column_config.TextColumn("En ARCA", width="small"),
             "Conciliado":  st.column_config.TextColumn("OK",  width="small"),
             "Match_Neto":  st.column_config.TextColumn("M.N", width="small"),

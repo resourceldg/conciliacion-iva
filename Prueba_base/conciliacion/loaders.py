@@ -121,6 +121,15 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
         if iva_cols else pd.Series(0.0, index=df.index)
     )
 
+    # Otros Tributos: detecta columnas candidatas (Perc.IIBB, Perc.IVA, Perc.Gan, Ret.IVA, Imp.Int…)
+    # Se preservan INDIVIDUALMENTE en el agg para que el reconciler pueda comparar con OR:
+    # Match si ARCA.Otros Tributos ≈ CUALQUIERA de ellas (no la suma de todas).
+    _OT_RE = r"(perc\.?\s*(iibb|iva|gan)|ret\.?\s*iva|imp\.?\s*int|percep|retenci)"
+    ot_cols = [c for c in df.columns if re.search(_OT_RE, c.lower().strip())]
+    for _oc in ot_cols:
+        df[_oc] = pd.to_numeric(df[_oc], errors="coerce").fillna(0)
+
+    _ot_agg = {c: (c, "sum") for c in ot_cols}
     agg = df.groupby("Comprobante", as_index=False).agg(
         Fecha_Factura=("Fecha_Factura", "first"),
         Tipo=("Tipo", "first"),
@@ -130,14 +139,33 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
         Neto=("Neto", "sum"),
         IVA=("IVA", "sum"),
         Total=("Total", _agg_total),
+        **_ot_agg,
     )
+    # Guardar los nombres de columnas candidatas como metadata en el df
+    agg.attrs["otros_tributos_cols"] = ot_cols
 
     agg["Origen"]    = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"]), axis=1)
     agg["CUIT_norm"] = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
 
+    # NroDoc_norm: columna "Nro.Doc." si existe y es distinta a la fuente de CUIT_DNI.
+    # Variante A: CUIT_DNI ya proviene de Nro.Doc. → NroDoc_norm == CUIT_norm.
+    # Variante B: CUIT_DNI proviene de "CUIT" → Nro.Doc. puede ser diferente.
+    _nrodoc_col_libro = next(
+        (c for c in df.columns if re.sub(r"[^a-z0-9]", "", c.lower()) in ("nrodoc", "nrodocumento")),
+        None,
+    )
+    if _nrodoc_col_libro:
+        _nd_map = df.groupby("Comprobante")[_nrodoc_col_libro].first()
+        agg["NroDoc_norm"] = (
+            agg["Comprobante"].map(_nd_map).astype(str).str.replace(r"[^0-9]", "", regex=True)
+        )
+    else:
+        agg["NroDoc_norm"] = agg["CUIT_norm"]
+
     _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
-    for _nc_col in ["Neto", "IVA", "Total"]:
-        agg.loc[_nc_mask, _nc_col] = -agg.loc[_nc_mask, _nc_col].abs()
+    for _nc_col in ["Neto", "IVA", "Total"] + ot_cols:
+        if _nc_col in agg.columns:
+            agg.loc[_nc_mask, _nc_col] = -agg.loc[_nc_mask, _nc_col].abs()
 
     tipo_label = {
         "FAC-A": "Factura A", "FAC-B": "Factura B", "FAC-C": "Factura C",
@@ -148,7 +176,9 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
 
     n = len(agg)
     st.info(f"Libro IVA Compras detectado — {n} comprobantes cargados.", icon="📖")
-    return agg.reset_index(drop=True)
+    result = agg.reset_index(drop=True)
+    result.attrs["otros_tributos_cols"] = ot_cols
+    return result
 
 
 def _load_subdiario_iva(source) -> "pd.DataFrame | None":
@@ -233,8 +263,9 @@ def _load_subdiario_iva(source) -> "pd.DataFrame | None":
         Total=("Total", _agg_total),
     )
 
-    agg["Origen"]    = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
-    agg["CUIT_norm"] = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+    agg["Origen"]      = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
+    agg["CUIT_norm"]   = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+    agg["NroDoc_norm"] = agg["CUIT_norm"]
 
     _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
     for _nc_col in ["Neto", "IVA", "Total"]:
@@ -356,8 +387,9 @@ def _load_pasion_iva(source) -> "pd.DataFrame | None":
         Total=("Total", _agg_total),
     )
 
-    agg["Origen"]    = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
-    agg["CUIT_norm"] = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+    agg["Origen"]      = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
+    agg["CUIT_norm"]   = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+    agg["NroDoc_norm"] = agg["CUIT_norm"]
 
     _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
     for _nc_col in ["Neto", "IVA", "Total"]:
@@ -532,6 +564,13 @@ def load_listado_iva(source, mapeo: dict | None = None):
         else:
             df[_dst] = 0.0
 
+    # Otros Tributos: preservar columnas candidatas individualmente (OR en el reconciler)
+    _ot_spec = col.get("otros_tributos_l", "")
+    _ot_col_names = _ot_spec if isinstance(_ot_spec, list) else ([_ot_spec] if isinstance(_ot_spec, str) and _ot_spec else [])
+    _ot_valid = [c for c in _ot_col_names if c in df.columns]
+    for _oc in _ot_valid:
+        df[_oc] = pd.to_numeric(df[_oc], errors="coerce").fillna(0)
+
     for _col_n in ["Perc_IIBB", "Perc_IVA"]:
         if _col_n in df.columns:
             df[_col_n] = pd.to_numeric(df[_col_n], errors="coerce").fillna(0)
@@ -540,6 +579,7 @@ def load_listado_iva(source, mapeo: dict | None = None):
         if _opt not in df.columns:
             df[_opt] = ""
 
+    _ot_agg_std = {c: (c, "sum") for c in _ot_valid}
     agg = df.groupby("Comprobante", as_index=False).agg(
         Fecha_Factura=("Fecha_Factura", "first"),
         Tipo=("Tipo", "first"),
@@ -549,6 +589,7 @@ def load_listado_iva(source, mapeo: dict | None = None):
         Neto=("Neto", "sum"),
         IVA=("IVA", "sum"),
         Total=("Total", _agg_total),
+        **_ot_agg_std,
     )
 
     for _xc in mapeo.get("extra_cols", []):
@@ -561,8 +602,9 @@ def load_listado_iva(source, mapeo: dict | None = None):
     agg["CUIT_norm"] = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
 
     _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
-    for _nc_col in ["Neto", "IVA", "Total"]:
-        agg.loc[_nc_mask, _nc_col] = -agg.loc[_nc_mask, _nc_col].abs()
+    for _nc_col in ["Neto", "IVA", "Total"] + _ot_valid:
+        if _nc_col in agg.columns:
+            agg.loc[_nc_mask, _nc_col] = -agg.loc[_nc_mask, _nc_col].abs()
 
     tipo_label = {
         "FAC-A": "Factura A", "FAC-B": "Factura B", "FAC-C": "Factura C",
@@ -572,7 +614,9 @@ def load_listado_iva(source, mapeo: dict | None = None):
     }
     agg["Tipo_Doc"] = agg["Tipo"].map(tipo_label).fillna(agg["Tipo"])
 
-    return agg.reset_index(drop=True)
+    result = agg.reset_index(drop=True)
+    result.attrs["otros_tributos_cols"] = _ot_valid
+    return result
 
 
 def load_arca(source, mapeo: dict | None = None):
