@@ -719,6 +719,14 @@ def load_arca(source, mapeo: dict | None = None):
     c_tiva = c.get("total_iva",      "Total IVA")          or "Total IVA"
     c_tot  = c.get("total",          "Imp. Total")         or "Imp. Total"
 
+    # Garantizar float64 en todos los campos de importe referenciados.
+    # COLS_IMPORTE usa c.get() crudo (puede ser "") y omite columnas mapeadas con fallback.
+    # Si alguna quedó como object (mixed Excel) la aritmética produce object y rompe el
+    # dtype-strict assignment de pandas 2.x (TypeError: Invalid value for dtype 'float64').
+    for _ec in {c_ng, c_nng, c_oe, c_ot, c_tiva, c_tot}:
+        if _ec and _ec in df.columns and not pd.api.types.is_float_dtype(df[_ec]):
+            df[_ec] = pd.to_numeric(df[_ec], errors="coerce").fillna(0)
+
     df["Neto_Total_ARCA"] = (
         df.get(c_ng,  pd.Series(0, index=df.index))
         + df.get(c_nng, pd.Series(0, index=df.index))
