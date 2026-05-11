@@ -17,15 +17,16 @@ Lógica principal:
      - "Sin match en ARCA": el comprobante no figura en ARCA
      - "Exterior / No en ARCA": comprobante exterior sin contraparte (esperado)
 
-Retorna (sheet1, sheet2, sheet3):
-  sheet1: todos los comprobantes del Listado con columnas de comparación
-  sheet2: comprobantes solo en Listado (no encontrados en ARCA)
-  sheet3: comprobantes solo en ARCA (sin contraparte en el Listado)
+Retorna (sheet1, sheet2, sheet3, warnings):
+  sheet1:   todos los comprobantes del Listado con columnas de comparación
+  sheet2:   comprobantes solo en Listado (no encontrados en ARCA)
+  sheet3:   comprobantes solo en ARCA (sin contraparte en el Listado)
+  warnings: lista de dict {"msg": str, "type": "warning"|"error"} para renderizar
+            fuera de st.status() y evitar el bug removeChild de Streamlit
 """
 import re
 
 import pandas as pd
-import streamlit as st
 
 
 def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
@@ -34,21 +35,28 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     extra_cols: lista de {"label": str, "col_l": str, "col_a": str} para comparaciones
     adicionales de alícuotas. Generan columnas Dif_<label> y Match_<label> informativas
     (no afectan el flag Conciliado).
+
+    Retorna (sheet1, sheet2, sheet3, warnings). Los warnings deben renderizarse en la
+    app después de que el bloque st.status() cierre, para evitar el bug removeChild.
     """
     extra_cols = extra_cols or []
+    _warnings: list[dict] = []
 
     # Normalizar índices para evitar IndexingError en mascaras booleanas
     df_listado = df_listado.reset_index(drop=True)
     df_arca    = df_arca.reset_index(drop=True)
 
-    # Deduplicar ARCA — avisa pero no falla
+    # Deduplicar ARCA — recolectar aviso, no renderizar aquí
     dupes = df_arca[df_arca.duplicated("Comprobante_Key", keep=False)]
     if not dupes.empty:
         n_keys = dupes["Comprobante_Key"].nunique()
-        st.warning(
-            f"ARCA contiene {len(dupes)} filas duplicadas para {n_keys} comprobante(s). "
-            "Se conserva la primera ocurrencia de cada uno."
-        )
+        _warnings.append({
+            "msg":  (
+                f"ARCA contiene {len(dupes)} filas duplicadas para {n_keys} comprobante(s). "
+                "Se conserva la primera ocurrencia de cada uno."
+            ),
+            "type": "warning",
+        })
         df_arca = df_arca.drop_duplicates("Comprobante_Key", keep="first")
 
     # Columnas estándar de ARCA renombradas para el JOIN
@@ -221,11 +229,13 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
         if _cuit_mismatch.any():
             merged.loc[_cuit_mismatch, "Estado"] = "CUIT no coincide"
             n_cd = int(_cuit_mismatch.sum())
-            st.warning(
-                f"⚠️ {n_cd} comprobante(s) con CUIT diferente al de ARCA — "
-                "no pueden conciliarse hasta corregir el CUIT en el sistema contable.",
-                icon="🚨",
-            )
+            _warnings.append({
+                "msg":  (
+                    f"⚠️ {n_cd} comprobante(s) con CUIT diferente al de ARCA — "
+                    "no pueden conciliarse hasta corregir el CUIT en el sistema contable."
+                ),
+                "type": "error",
+            })
     else:
         merged["CUIT_mismatch"] = False
 
@@ -257,4 +267,4 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     ] if c in df_arca.columns]
     sheet3 = df_arca[~df_arca["Comprobante_Key"].isin(arca_matched_keys)][keep].copy()
 
-    return sheet1, sheet2, sheet3
+    return sheet1, sheet2, sheet3, _warnings

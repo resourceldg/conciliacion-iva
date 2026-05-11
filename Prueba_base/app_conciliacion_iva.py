@@ -309,6 +309,7 @@ if procesar:
 
     df_listado = df_arca = s1 = s2 = s3 = None
     hubo_cambio = False
+    _recon_warns: list[dict] = []
     with st.status("Procesando conciliación...", expanded=True) as _proc_status:
         try:
             mapeo_l = st.session_state.get("mapeo_listado", copy.deepcopy(MAPEOS_DEFAULT["listado"]["Colppy"]))
@@ -339,21 +340,31 @@ if procesar:
 
             if df_listado is not None and df_arca is not None:
                 _proc_status.update(label="Cruzando comprobantes...")
-                s1, s2, s3 = conciliar(df_listado, df_arca, tolerancia, extra_cols=_extra_cols)
+                s1, s2, s3, _recon_warns = conciliar(df_listado, df_arca, tolerancia, extra_cols=_extra_cols)
                 _proc_status.update(label="Guardando resultado...")
                 hubo_cambio = guardar_csv(s1, s2, s3, tolerancia)
                 _proc_status.update(label="Conciliación completada", state="complete", expanded=False)
             else:
+                _recon_warns = []
                 _proc_status.update(label="No se pudo procesar — revisá los errores", state="error")
         except Exception as e:
             import traceback as _tb
             print(f"[ERROR procesamiento] {_tb.format_exc()}", file=sys.stderr)
+            _recon_warns = []
             _proc_status.update(label="Error inesperado", state="error")
             st.error(
                 f"Error al procesar los archivos: **{type(e).__name__}** — {e}\n\n"
                 "Verificá que los archivos sean los formatos correctos y que el "
                 "emparejamiento de columnas sea el adecuado."
             )
+
+    # Renderizar avisos del reconciler FUERA del st.status() para evitar el bug
+    # removeChild de Streamlit (elementos condicionales dentro de un status cambiante).
+    for _w in _recon_warns:
+        if _w.get("type") == "error":
+            st.error(_w["msg"], icon="🚨")
+        else:
+            st.warning(_w["msg"])
 
     if df_listado is None or df_arca is None or s1 is None:
         st.stop()
