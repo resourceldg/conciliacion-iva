@@ -207,6 +207,11 @@ def _detectar_formato_colppy(source) -> str:
                 return "libro"
         if header.str.contains(r"suc\.", na=False).any() and header.str.contains("letra", na=False).any():
             return "libro"
+        # IvaCompras / Libro IVA Compras con columna "Nro Factura" y datos por fila
+        for i in range(min(10, len(sheet))):
+            row = sheet.iloc[i].astype(str).str.lower()
+            if row.str.contains(r"nro[\s._]?factur", na=False, regex=True).any():
+                return "libro"
     except Exception:
         pass
     return "listado"

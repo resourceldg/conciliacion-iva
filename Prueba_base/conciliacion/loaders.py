@@ -45,7 +45,7 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
     # Buscar header priorizando "Comprobante" (Variante B) y "Suc." (Variante A).
     # "Suc." puede aparecer en nombres de empresa en filas de datos, generando
     # un falso positivo si se busca primero.
-    hr = _find_header(sheet, "Comprobante", ["Suc.", "Numero", "Proveedor", "Nro.Doc."])
+    hr = _find_header(sheet, "Comprobante", ["Suc.", "Numero", "Proveedor", "Nro.Doc.", "Nro Factura", "Nro Factur"])
     if hr is None:
         hr = 0
     header_cols = [str(c).strip() for c in sheet.iloc[hr]]
@@ -110,16 +110,97 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
         )
         df["Total"] = pd.to_numeric(df.get("Total", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0)
 
+    # ── Variante C: IvaCompras — columna "Nro Factura" con formato "FCA 00002-00021696"
     else:
-        st.error("No se encontraron comprobantes válidos en el Libro IVA Compras.")
-        return None
+        _nro_col_c = next(
+            (c for c in df.columns if re.search(r"nro[\s._]?factur", c.lower())),
+            None,
+        )
+        if _nro_col_c is None:
+            st.error("No se encontraron comprobantes válidos en el Libro IVA Compras.")
+            return None
+
+        comp_raw = df[_nro_col_c].astype(str).str.strip()
+        cp = comp_raw.str.extract(r"^([A-Z]{2,3})\s+(\d{1,5})-(\d+)$", expand=True)
+        df["_tipo_pfx"] = cp[0].fillna("FAC")
+        df["_letra"]    = cp[0].str[-1].fillna("A").str.upper()
+        df["Comprobante"] = cp[1].str.zfill(5) + "-" + cp[2].str.zfill(8)
+        df = df[df["Comprobante"].str.match(r"^\d{5}-\d{8}$", na=False)].copy()
+        if df.empty:
+            st.error("No se encontraron comprobantes válidos en el Libro IVA Compras.")
+            return None
+
+        def _pfx_tipo_c(pfx: str, letra: str) -> str:
+            p = pfx.upper()
+            if p.startswith("NC"):
+                return f"NCC-{letra}"
+            return f"FAC-{letra}"
+
+        df["Tipo"] = [_pfx_tipo_c(p, l) for p, l in zip(df["_tipo_pfx"], df["_letra"])]
+
+        _fecha_col_c = next(
+            (c for c in df.columns if re.search(r"fecha[\s._]?(emis|fact|cbte)?", c.lower())),
+            None,
+        )
+        df["Fecha_Factura"] = df[_fecha_col_c] if _fecha_col_c else pd.Series("", index=df.index)
+
+        _cuit_col_c = next(
+            (c for c in df.columns if re.search(r"^cuit$", c.lower().strip())),
+            None,
+        )
+        df["CUIT_DNI"] = (
+            df[_cuit_col_c].astype(str).str.strip() if _cuit_col_c
+            else pd.Series("", index=df.index)
+        )
+
+        _rs_col_c = next(
+            (c for c in df.columns if re.search(r"razon[\s._]?soci", c.lower())),
+            None,
+        )
+        df["Razon_Social"] = df[_rs_col_c] if _rs_col_c else pd.Series("", index=df.index)
+
+        _cond_col_c = next(
+            (c for c in df.columns if re.search(r"condic", c.lower())),
+            None,
+        )
+        df["Condicion_IVA"] = df[_cond_col_c] if _cond_col_c else pd.Series("", index=df.index)
+
+        # Neto = suma de columnas "Monto Gravado*" (excluye "No Gravado")
+        _neto_cols_c = [
+            c for c in df.columns
+            if re.search(r"monto\s*grav(?:ado)?", c.lower())
+            and not re.search(r"no\s*grav", c.lower())
+        ]
+        df["Neto"] = (
+            sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in _neto_cols_c)
+            if _neto_cols_c else pd.Series(0.0, index=df.index)
+        )
+
+        _iva_col_c = next(
+            (c for c in df.columns if re.search(r"iva[\s._]?factur", c.lower())),
+            None,
+        )
+        df["IVA"] = (
+            pd.to_numeric(df[_iva_col_c], errors="coerce").fillna(0) if _iva_col_c
+            else pd.Series(0.0, index=df.index)
+        )
+
+        _total_col_c = next(
+            (c for c in df.columns if re.search(r"total[\s._]?fact", c.lower())),
+            None,
+        )
+        df["Total"] = (
+            pd.to_numeric(df[_total_col_c], errors="coerce").fillna(0) if _total_col_c
+            else pd.Series(0.0, index=df.index)
+        )
 
     # IVA: suma de todas las columnas "IVA X%" (ambas variantes)
+    # Variante C ya asigna df["IVA"]; Variante A/B usan columnas "IVA X%"
     iva_cols = [c for c in df.columns if re.match(r"^iva\s*[\d,.]", c.lower().strip())]
-    df["IVA"] = (
-        sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in iva_cols)
-        if iva_cols else pd.Series(0.0, index=df.index)
-    )
+    if iva_cols:
+        df["IVA"] = sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in iva_cols)
+    elif "IVA" not in df.columns:
+        df["IVA"] = pd.Series(0.0, index=df.index)
 
     # Otros Tributos: detecta columnas candidatas (Perc.IIBB, Perc.IVA, Perc.Gan, Ret.IVA, Imp.Int…)
     # Se preservan INDIVIDUALMENTE en el agg para que el reconciler pueda comparar con OR:
