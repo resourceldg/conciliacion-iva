@@ -129,8 +129,12 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
     for _oc in ot_cols:
         df[_oc] = pd.to_numeric(df[_oc], errors="coerce").fillna(0)
 
+    # CUIT_norm como clave secundaria de agrupación: evita mezclar comprobantes
+    # de distintos proveedores que coincidan en número (XXXXX-YYYYYYYY no es único
+    # entre proveedores; el par Comprobante+CUIT_norm sí lo es).
+    df["CUIT_norm"] = df["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
     _ot_agg = {c: (c, "sum") for c in ot_cols}
-    agg = df.groupby("Comprobante", as_index=False).agg(
+    agg = df.groupby(["Comprobante", "CUIT_norm"], as_index=False).agg(
         Fecha_Factura=("Fecha_Factura", "first"),
         Tipo=("Tipo", "first"),
         CUIT_DNI=("CUIT_DNI", "first"),
@@ -144,8 +148,7 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
     # Guardar los nombres de columnas candidatas como metadata en el df
     agg.attrs["otros_tributos_cols"] = ot_cols
 
-    agg["Origen"]    = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"]), axis=1)
-    agg["CUIT_norm"] = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+    agg["Origen"] = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"]), axis=1)
 
     # NroDoc_norm: columna "Nro.Doc." si existe y es distinta a la fuente de CUIT_DNI.
     # Variante A: CUIT_DNI ya proviene de Nro.Doc. → NroDoc_norm == CUIT_norm.
@@ -250,9 +253,10 @@ def _load_subdiario_iva(source) -> "pd.DataFrame | None":
         if iva_cols else pd.Series(0.0, index=df.index)
     )
 
-    df["Total"] = pd.to_numeric(df.get("Total", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0)
+    df["Total"]     = pd.to_numeric(df.get("Total", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0)
+    df["CUIT_norm"] = df["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
 
-    agg = df.groupby("Comprobante", as_index=False).agg(
+    agg = df.groupby(["Comprobante", "CUIT_norm"], as_index=False).agg(
         Fecha_Factura=("Fecha_Factura", "first"),
         Tipo=("Tipo", "first"),
         CUIT_DNI=("CUIT_DNI", "first"),
@@ -264,7 +268,6 @@ def _load_subdiario_iva(source) -> "pd.DataFrame | None":
     )
 
     agg["Origen"]      = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
-    agg["CUIT_norm"]   = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
     agg["NroDoc_norm"] = agg["CUIT_norm"]
 
     _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
@@ -374,9 +377,10 @@ def _load_pasion_iva(source) -> "pd.DataFrame | None":
     else:
         df["IVA"] = _to_num(df[iva_col])
 
-    df["Total"] = _to_num(df.get("Total", pd.Series(0.0, index=df.index)))
+    df["Total"]     = _to_num(df.get("Total", pd.Series(0.0, index=df.index)))
+    df["CUIT_norm"] = df["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
 
-    agg = df.groupby("Comprobante", as_index=False).agg(
+    agg = df.groupby(["Comprobante", "CUIT_norm"], as_index=False).agg(
         Fecha_Factura=("Fecha_Factura", "first"),
         Tipo=("Tipo", "first"),
         CUIT_DNI=("CUIT_DNI", "first"),
@@ -388,7 +392,6 @@ def _load_pasion_iva(source) -> "pd.DataFrame | None":
     )
 
     agg["Origen"]      = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
-    agg["CUIT_norm"]   = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
     agg["NroDoc_norm"] = agg["CUIT_norm"]
 
     _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
@@ -453,11 +456,12 @@ def _load_tango_iva(source) -> "pd.DataFrame | None":
     # Neto = gravado + exento (para comparar con Neto_Total_ARCA de ARCA)
     neto_grav = pd.to_numeric(df.get("IMP_NETO",   pd.Series(0, index=df.index)), errors="coerce").fillna(0)
     neto_exen = pd.to_numeric(df.get("IMP_EXENTO", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
-    df["Neto"]  = neto_grav + neto_exen
-    df["IVA"]   = pd.to_numeric(df.get("IMP_IVA",   pd.Series(0, index=df.index)), errors="coerce").fillna(0)
-    df["Total"] = pd.to_numeric(df.get("IMP_TOTAL", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+    df["Neto"]      = neto_grav + neto_exen
+    df["IVA"]       = pd.to_numeric(df.get("IMP_IVA",   pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+    df["Total"]     = pd.to_numeric(df.get("IMP_TOTAL", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+    df["CUIT_norm"] = df["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
 
-    agg = df.groupby("Comprobante", as_index=False).agg(
+    agg = df.groupby(["Comprobante", "CUIT_norm"], as_index=False).agg(
         Fecha_Factura=("Fecha_Factura", "first"),
         Tipo=("Tipo", "first"),
         CUIT_DNI=("CUIT_DNI", "first"),
@@ -468,8 +472,7 @@ def _load_tango_iva(source) -> "pd.DataFrame | None":
         Total=("Total", _agg_total),
     )
 
-    agg["Origen"]    = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
-    agg["CUIT_norm"] = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+    agg["Origen"] = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
 
     _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
     for _nc_col in ["Neto", "IVA", "Total"]:
@@ -551,6 +554,8 @@ def load_listado_iva(source, mapeo: dict | None = None):
         if isinstance(_spec, str) and _spec:
             _renames[_spec] = _dst
     df = df.rename(columns=_renames)
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated(keep="first")]
 
     valid = df["Comprobante"].astype(str).str.match(r"^\d{5}-\d{8}$")
     df    = df[valid].copy()
@@ -579,8 +584,11 @@ def load_listado_iva(source, mapeo: dict | None = None):
         if _opt not in df.columns:
             df[_opt] = ""
 
+    # CUIT_norm como clave secundaria: evita mezclar comprobantes de distintos
+    # proveedores con el mismo número XXXXX-YYYYYYYY (el par Comp+CUIT es único).
+    df["CUIT_norm"] = df["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
     _ot_agg_std = {c: (c, "sum") for c in _ot_valid}
-    agg = df.groupby("Comprobante", as_index=False).agg(
+    agg = df.groupby(["Comprobante", "CUIT_norm"], as_index=False).agg(
         Fecha_Factura=("Fecha_Factura", "first"),
         Tipo=("Tipo", "first"),
         CUIT_DNI=("CUIT_DNI", "first"),
@@ -596,10 +604,11 @@ def load_listado_iva(source, mapeo: dict | None = None):
         _xcol_l = _xc.get("col_l", "")
         if _xcol_l and _xcol_l in df.columns:
             _xserie = pd.to_numeric(df[_xcol_l], errors="coerce").fillna(0)
-            agg[_xcol_l] = agg["Comprobante"].map(_xserie.groupby(df["Comprobante"]).sum()).fillna(0)
+            _key = df["Comprobante"] + "|" + df["CUIT_norm"]
+            _agg_key = agg["Comprobante"] + "|" + agg["CUIT_norm"]
+            agg[_xcol_l] = _agg_key.map(_xserie.groupby(_key).sum()).fillna(0)
 
-    agg["Origen"]    = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
-    agg["CUIT_norm"] = agg["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+    agg["Origen"] = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"], r["Tipo"]), axis=1)
 
     _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
     for _nc_col in ["Neto", "IVA", "Total"] + _ot_valid:
