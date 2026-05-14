@@ -53,7 +53,10 @@ def _detectar_cols_multi(cols_archivo: list, campo: str) -> list[str]:
         return []
     return [
         col for col in cols_archivo
-        if any(_normalizar_col(col).startswith(p) for p in prefijos)
+        if any(
+            _normalizar_col(col).startswith(p) and len(_normalizar_col(col)) > len(p)
+            for p in prefijos
+        )
     ]
 
 
