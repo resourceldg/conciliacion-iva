@@ -781,8 +781,10 @@ if st.session_state.get("loaded"):
 
         if "Origen" in d2.columns:
             resumen   = d2["Origen"].value_counts()
-            cols_res  = st.columns(len(resumen))
-            for i, (orig, cnt) in enumerate(resumen.items()):
+            if len(resumen) == 0:
+                resumen = None
+            cols_res  = st.columns(len(resumen)) if resumen is not None else []
+            for i, (orig, cnt) in enumerate(resumen.items() if resumen is not None else []):
                 cls = "or" if orig == "Exterior" else "bl"
                 cols_res[i].markdown(f"""
                 <div class="kpi {cls}" style="margin:0">
