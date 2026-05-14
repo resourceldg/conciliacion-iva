@@ -46,18 +46,30 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     df_listado = df_listado.reset_index(drop=True)
     df_arca    = df_arca.reset_index(drop=True)
 
-    # Deduplicar ARCA — recolectar aviso, no renderizar aquí
-    dupes = df_arca[df_arca.duplicated("Comprobante_Key", keep=False)]
-    if not dupes.empty:
-        n_keys = dupes["Comprobante_Key"].nunique()
+    # Agregar ARCA por comprobante: un comprobante con múltiples alícuotas de IVA
+    # aparece como varias filas en ARCA (una por alícuota). Se suman Neto, IVA y
+    # OtrosTrib; se toma el primer valor para Total (repetido en cada fila) y
+    # para todos los campos de metadata (fecha, CUIT, denominación, etc.).
+    _dupes_arca = df_arca[df_arca.duplicated("Comprobante_Key", keep=False)]
+    if not _dupes_arca.empty:
+        n_keys = _dupes_arca["Comprobante_Key"].nunique()
         _warnings.append({
-            "msg":  (
-                f"ARCA contiene {len(dupes)} filas duplicadas para {n_keys} comprobante(s). "
-                "Se conserva la primera ocurrencia de cada uno."
+            "msg": (
+                f"ARCA contiene múltiples filas para {n_keys} comprobante(s) "
+                "(distintas alícuotas de IVA). Se agrupan sumando IVA y Neto."
             ),
             "type": "warning",
         })
-        df_arca = df_arca.drop_duplicates("Comprobante_Key", keep="first")
+    _sum_fields_arca = {"Neto_Total_ARCA", "Total IVA", "Otros Tributos"}
+    for _xc in extra_cols:
+        _ca = _xc.get("col_a", "")
+        if _ca and _ca in df_arca.columns:
+            _sum_fields_arca.add(_ca)
+    _sum_c_arca   = [c for c in df_arca.columns if c in _sum_fields_arca]
+    _first_c_arca = [c for c in df_arca.columns if c not in _sum_fields_arca and c != "Comprobante_Key"]
+    _agg_arca = {c: (c, "sum") for c in _sum_c_arca}
+    _agg_arca.update({c: (c, "first") for c in _first_c_arca})
+    df_arca = df_arca.groupby("Comprobante_Key", as_index=False).agg(**_agg_arca)
 
     # Columnas estándar de ARCA renombradas para el JOIN
     _arca_std_rename = {
@@ -151,6 +163,26 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     )
     merged = pd.concat([merged_nac, merged_ext], ignore_index=True, sort=False)
     merged["Existe_en_ARCA"] = merged["ARCA_Key"].notna()
+
+    # Corrección de signo para NC donde ARCA no detectó es_NC
+    # (ocurre cuando la columna Tipo de ARCA no está mapeada o usa código numérico).
+    # Se usa el Tipo del Listado como fuente de verdad para identificar la NC.
+    _tipo_l     = merged.get("Tipo",     pd.Series("", index=merged.index))
+    _tipo_doc_l = merged.get("Tipo_Doc", pd.Series("", index=merged.index))
+    _nc_listado = (
+        _tipo_l.str.upper().str.startswith("NCC")
+        | _tipo_doc_l.str.upper().str.startswith("NC ")
+    )
+    _arca_es_nc_cur = merged.get(
+        "ARCA_es_NC", pd.Series(False, index=merged.index)
+    ).fillna(False)
+    _sign_fix_mask = _nc_listado & merged["Existe_en_ARCA"] & ~_arca_es_nc_cur
+    if _sign_fix_mask.any():
+        for _sc in ["ARCA_Neto", "ARCA_IVA", "ARCA_OtrosTrib", "ARCA_Total"]:
+            if _sc in merged.columns:
+                merged.loc[_sign_fix_mask, _sc] = -merged.loc[_sign_fix_mask, _sc].abs()
+        if "ARCA_es_NC" in merged.columns:
+            merged.loc[_sign_fix_mask, "ARCA_es_NC"] = True
 
     tol = tolerancia
     for campo in ["Neto", "IVA", "Total"]:
