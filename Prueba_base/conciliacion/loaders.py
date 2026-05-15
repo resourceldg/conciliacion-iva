@@ -165,15 +165,14 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
         )
         df["Condicion_IVA"] = df[_cond_col_c] if _cond_col_c else pd.Series("", index=df.index)
 
-        # Neto = suma de columnas "Monto Gravado*" (excluye "No Gravado")
-        _neto_cols_c = [
-            c for c in df.columns
-            if re.search(r"monto\s*grav(?:ado)?", c.lower())
-            and not re.search(r"no\s*grav", c.lower())
-        ]
+        # Neto = Monto Gravado* + Monto No Gravado* (espeja Neto_Total_ARCA =
+        # Neto Gravado Total + Neto No Gravado + Op. Exentas)
+        _neto_cols_c = [c for c in df.columns if re.search(r"monto\s*grav(?:ado)?", c.lower())]
+        _neto_no_cols_c = [c for c in df.columns if re.search(r"monto\s*no\s*grav", c.lower())]
+        _all_neto_cols_c = _neto_cols_c + _neto_no_cols_c
         df["Neto"] = (
-            sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in _neto_cols_c)
-            if _neto_cols_c else pd.Series(0.0, index=df.index)
+            sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in _all_neto_cols_c)
+            if _all_neto_cols_c else pd.Series(0.0, index=df.index)
         )
 
         _iva_col_c = next(
