@@ -660,7 +660,7 @@ class TestReconcilerNC:
 
     def test_nc_exento_concilia_por_total(self):
         from conciliacion.reconciler import conciliar
-        s1, _, _ = conciliar(self._listado_nc_exento(), self._arca_nc_exento(), 0.07)
+        s1, _, _, _ = conciliar(self._listado_nc_exento(), self._arca_nc_exento(), 0.07)
         assert s1["Estado"].iloc[0] == "Conciliado"
 
     def test_nc_con_neto_iva_completo_concilia(self):
@@ -677,7 +677,7 @@ class TestReconcilerNC:
             "Denominación Emisor": "PROV SA", "Nro. Doc. Emisor": "30123456789",
             "es_NC": True, "neto_derivado": False,
         }])
-        s1, _, _ = conciliar(l, a, 0.07)
+        s1, _, _, _ = conciliar(l, a, 0.07)
         assert s1["Estado"].iloc[0] == "Conciliado"
 
     def test_nc_sin_match_arca(self):
@@ -691,5 +691,5 @@ class TestReconcilerNC:
                                    "Total IVA", "Otros Tributos", "Imp. Total", "Fecha",
                                    "Tipo_Doc_ARCA", "Denominación Emisor", "Nro. Doc. Emisor",
                                    "es_NC", "neto_derivado"])
-        s1, _, _ = conciliar(l, a, 0.07)
+        s1, _, _, _ = conciliar(l, a, 0.07)
         assert s1["Estado"].iloc[0] == "Sin match en ARCA"

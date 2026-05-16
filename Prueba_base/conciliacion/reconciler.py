@@ -173,9 +173,10 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
         _tipo_l.str.upper().str.startswith("NCC")
         | _tipo_doc_l.str.upper().str.startswith("NC ")
     )
-    _arca_es_nc_cur = merged.get(
-        "ARCA_es_NC", pd.Series(False, index=merged.index)
-    ).fillna(False)
+    _arca_es_nc_cur = pd.to_numeric(
+        merged.get("ARCA_es_NC", pd.Series(0, index=merged.index)),
+        errors="coerce",
+    ).fillna(0).astype(bool)
     _sign_fix_mask = _nc_listado & merged["Existe_en_ARCA"] & ~_arca_es_nc_cur
     if _sign_fix_mask.any():
         for _sc in ["ARCA_Neto", "ARCA_IVA", "ARCA_OtrosTrib", "ARCA_Total"]:
@@ -187,7 +188,8 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     tol = tolerancia
     for campo in ["Neto", "IVA", "Total"]:
         merged[f"Dif_{campo}"] = (
-            merged[campo].fillna(0) - merged[f"ARCA_{campo}"].fillna(0)
+            pd.to_numeric(merged[campo], errors="coerce").fillna(0)
+            - pd.to_numeric(merged[f"ARCA_{campo}"], errors="coerce").fillna(0)
         ).abs()
 
     merged["Match_Neto"]  = merged["Existe_en_ARCA"] & (merged["Dif_Neto"]  <= tol)

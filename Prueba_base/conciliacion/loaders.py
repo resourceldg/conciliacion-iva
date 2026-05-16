@@ -175,13 +175,10 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
             if _all_neto_cols_c else pd.Series(0.0, index=df.index)
         )
 
-        _iva_col_c = next(
-            (c for c in df.columns if re.search(r"iva[\s._]?factur", c.lower())),
-            None,
-        )
+        _iva_cols_c = [c for c in df.columns if re.search(r"iva[\s._]?factur", c.lower())]
         df["IVA"] = (
-            pd.to_numeric(df[_iva_col_c], errors="coerce").fillna(0) if _iva_col_c
-            else pd.Series(0.0, index=df.index)
+            sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in _iva_cols_c)
+            if _iva_cols_c else pd.Series(0.0, index=df.index)
         )
 
         _total_col_c = next(
