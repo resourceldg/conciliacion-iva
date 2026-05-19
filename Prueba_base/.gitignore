@@ -16,6 +16,11 @@ data/persistencia/
 __pycache__/
 *.pyc
 
+# Bases de datos generadas en runtime
+data/*.db
+data/state_store.db/
+data/stream_store/
+
 # OS
 .DS_Store
 Thumbs.db

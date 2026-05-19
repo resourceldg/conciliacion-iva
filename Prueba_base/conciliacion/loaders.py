@@ -567,6 +567,173 @@ def _load_tango_iva(source) -> "pd.DataFrame | None":
     return agg.reset_index(drop=True)
 
 
+def _load_libro_iva_bim(source) -> "pd.DataFrame | None":
+    """Carga el Libro IVA Compras con columna B.Imponible.
+
+    Comprobante: "FC -A-0008-00036818" → "00008-00036818", Tipo → FAC-A
+                 "NC -A-0700-00016822" → "00700-00016822", Tipo → NCC-A
+    Neto = B.Imponible + No Gravado  (espeja Neto_Total_ARCA)
+    IVA  = suma de columnas "IVA X%"
+    Otros Tributos: Perc.IVA, Perc. I.B.CAB, Perc. I.B.Bs As, Perc. Gan.
+    """
+    raw   = leer_excel(source)
+    sheet = _mejor_hoja(raw)
+
+    hr = _find_header(sheet, "B.Imponible", ["B. Imponible", "Comprobante", "C.U.I.T."])
+    if hr is None:
+        hr = _find_header(sheet, "B. Imponible", ["Comprobante", "Proveedor"])
+    if hr is None:
+        st.error("No se encontró el encabezado en el Libro IVA (B.Imponible).")
+        return None
+
+    header_cols = [str(c).strip() for c in sheet.iloc[hr]]
+    df = sheet.iloc[hr + 1:].copy()
+    df.columns = header_cols
+    df = df.reset_index(drop=True)
+
+    # ── Comprobante: "FC -A-0008-00036818" → "00008-00036818" ────────────────
+    _comp_col = next(
+        (c for c in df.columns if c.strip().lower() == "comprobante"),
+        None,
+    )
+    if _comp_col is None:
+        st.error("No se encontró la columna 'Comprobante' en el Libro IVA (B.Imponible).")
+        return None
+
+    comp_raw = df[_comp_col].astype(str).str.strip()
+
+    def _parse_comp_bim(s: str):
+        m = re.match(r"^(FC|NC|ND)\s+-([A-Za-z])-(\d+)-(\d+)$", s.strip())
+        if m:
+            tipo_pfx = m.group(1).upper()
+            letra    = m.group(2).upper()
+            ptovta   = m.group(3).zfill(5)
+            num      = m.group(4).zfill(8)
+            tipo_map = {"FC": "FAC", "NC": "NCC", "ND": "NDB"}
+            return f"{ptovta}-{num}", f"{tipo_map.get(tipo_pfx, 'FAC')}-{letra}"
+        return "", ""
+
+    parsed = comp_raw.apply(_parse_comp_bim)
+    df["Comprobante"] = [p[0] for p in parsed]
+    df["Tipo"]        = [p[1] for p in parsed]
+    df = df[df["Comprobante"].str.match(r"^\d{5}-\d{8}$", na=False)].copy()
+
+    if df.empty:
+        st.error("No se encontraron comprobantes válidos en el Libro IVA (B.Imponible).")
+        return None
+
+    # ── Campos identificatorios ───────────────────────────────────────────────
+    _fecha_col = next(
+        (c for c in df.columns if re.search(r"fecha", c.lower())), None
+    )
+    df["Fecha_Factura"] = (
+        df[_fecha_col] if _fecha_col else pd.Series("", index=df.index)
+    )
+
+    _cuit_col = next(
+        (c for c in df.columns if re.search(r"c\.?u\.?i\.?t\.?", c.lower())), None
+    )
+    df["CUIT_DNI"] = (
+        df[_cuit_col].astype(str).str.strip() if _cuit_col
+        else pd.Series("", index=df.index)
+    )
+
+    _rs_col = next(
+        (c for c in df.columns if re.search(r"provee", c.lower())), None
+    )
+    df["Razon_Social"] = (
+        df[_rs_col] if _rs_col else pd.Series("", index=df.index)
+    )
+
+    # Columna "IVA" contiene la condición del proveedor (RI/MON/NOC/EXE)
+    _iva_cond_col = next(
+        (c for c in df.columns if c.strip().upper() == "IVA"), None
+    )
+    df["Condicion_IVA"] = (
+        df[_iva_cond_col] if _iva_cond_col else pd.Series("", index=df.index)
+    )
+
+    # ── Importes ──────────────────────────────────────────────────────────────
+    _bim_col = next(
+        (c for c in df.columns if re.search(r"b\.?\s*imponible", c.lower())), None
+    )
+    bim = (
+        pd.to_numeric(df[_bim_col], errors="coerce").fillna(0) if _bim_col
+        else pd.Series(0.0, index=df.index)
+    )
+
+    _nog_col = next(
+        (c for c in df.columns if re.search(r"no\s*gravado", c.lower())), None
+    )
+    no_gravado = (
+        pd.to_numeric(df[_nog_col], errors="coerce").fillna(0) if _nog_col
+        else pd.Series(0.0, index=df.index)
+    )
+
+    # Neto = B.Imponible + No Gravado  (espeja ARCA: Neto Gravado + Neto No Gravado + Op. Exentas)
+    df["Neto"] = bim + no_gravado
+
+    # IVA: suma de columnas "IVA X%" (excluye la columna de condición "IVA")
+    iva_cols = [
+        c for c in df.columns
+        if re.match(r"^iva\s*[\d,.]", c.lower().strip())
+    ]
+    df["IVA"] = (
+        sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in iva_cols)
+        if iva_cols else pd.Series(0.0, index=df.index)
+    )
+
+    _total_col = next(
+        (c for c in df.columns if c.strip().lower() == "total"), None
+    )
+    df["Total"] = (
+        pd.to_numeric(df[_total_col], errors="coerce").fillna(0) if _total_col
+        else pd.Series(0.0, index=df.index)
+    )
+
+    # ── Otros Tributos (percepciones individuales) ────────────────────────────
+    _OT_RE = r"(perc\.?\s*(iibb|iva|gan|i\.?b\.|gananc)|ret\.?\s*iva|imp\.?\s*int|percep|retenci)"
+    ot_cols = [c for c in df.columns if re.search(_OT_RE, c.lower().strip())]
+    for _oc in ot_cols:
+        df[_oc] = pd.to_numeric(df[_oc], errors="coerce").fillna(0)
+
+    df["CUIT_norm"] = df["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+    _ot_agg = {c: (c, "sum") for c in ot_cols}
+    agg = df.groupby(["Comprobante", "CUIT_norm"], as_index=False).agg(
+        Fecha_Factura=("Fecha_Factura", "first"),
+        Tipo=("Tipo", "first"),
+        CUIT_DNI=("CUIT_DNI", "first"),
+        Razon_Social=("Razon_Social", "first"),
+        Condicion_IVA=("Condicion_IVA", "first"),
+        Neto=("Neto", "sum"),
+        IVA=("IVA", "sum"),
+        Total=("Total", _agg_total),
+        **_ot_agg,
+    )
+    agg.attrs["otros_tributos_cols"] = ot_cols
+
+    agg["Origen"]      = agg.apply(lambda r: _origen_from_cuit_tipo(r["CUIT_DNI"]), axis=1)
+    agg["NroDoc_norm"] = agg["CUIT_norm"]
+
+    _nc_mask = agg["Tipo"].str.upper().str.startswith("NCC")
+    for _nc_col in ["Neto", "IVA", "Total"] + ot_cols:
+        if _nc_col in agg.columns:
+            agg.loc[_nc_mask, _nc_col] = -agg.loc[_nc_mask, _nc_col].abs()
+
+    tipo_label = {
+        "FAC-A": "Factura A", "FAC-B": "Factura B", "FAC-C": "Factura C",
+        "NCC-A": "NC A", "NCC-B": "NC B", "NCC-C": "NC C",
+        "NDB-A": "ND A", "NDB-B": "ND B", "NDB-C": "ND C",
+    }
+    agg["Tipo_Doc"] = agg["Tipo"].map(tipo_label).fillna(agg["Tipo"])
+
+    n = len(agg)
+    st.info(f"Libro IVA Compras (B.Imponible) detectado — {n} comprobantes cargados.", icon="📖")
+    result = agg.reset_index(drop=True)
+    result.attrs["otros_tributos_cols"] = ot_cols
+    return result
+
+
 def load_listado_iva(source, mapeo: dict | None = None):
     """Carga y normaliza el Listado IVA Compras exportado de Colppy.
 
@@ -598,6 +765,8 @@ def load_listado_iva(source, mapeo: dict | None = None):
         return _load_subdiario_iva(source)
     if fmt == "pasion":
         return _load_pasion_iva(source)
+    if fmt == "libro_bim":
+        return _load_libro_iva_bim(source)
 
     raw   = leer_excel(source)
     sheet = _mejor_hoja(raw)

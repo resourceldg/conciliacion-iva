@@ -213,7 +213,7 @@ with st.sidebar:
             except Exception:
                 pass
 
-            if _fmt_ml == "libro":
+            if _fmt_ml in ("libro", "libro_bim"):
                 st.success(
                     f"📖 Libro IVA Compras detectado — {len(_cols)} columnas. "
                     "Las columnas se mapean **automáticamente**."

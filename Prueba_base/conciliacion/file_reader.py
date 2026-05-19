@@ -212,6 +212,11 @@ def _detectar_formato_colppy(source) -> str:
             row = sheet.iloc[i].astype(str).str.lower()
             if row.str.contains(r"nro[\s._]?factur", na=False, regex=True).any():
                 return "libro"
+        # Libro IVA con columna "B.Imponible" (formato FC -A-XXXX-YYYYYYYY)
+        for i in range(min(10, len(sheet))):
+            row = sheet.iloc[i].astype(str).str.lower()
+            if row.str.contains(r"b\.?\s*imponible", na=False, regex=True).any():
+                return "libro_bim"
     except Exception:
         pass
     return "listado"
