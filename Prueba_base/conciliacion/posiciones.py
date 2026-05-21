@@ -360,3 +360,185 @@ def read_posiciones_iva(
             result[(mes, anio)] = vals
 
     return result
+
+
+# ── Leer Posiciones desde PDF ARCA ───────────────────────────────────────────
+
+_PDF_MONTH_ABBR: dict[str, int] = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+_PDF_CONCEPT_RE = re.compile(
+    r"^[DH]\s+"                   # D / H indicator
+    r"(?:[\d.]+\s+)?"             # optional account number
+    r"(.+?)"                      # concept name (lazy)
+    r"(?:\s+([\d,]+\.\d{2}))?"   # optional value
+    r"\s*$"
+)
+
+# Row index → field name for IVA value-only tables (continuation months)
+_IVA_VALUE_ROWS: dict[int, str] = {
+    1: "debito_fiscal",
+    3: "_libre_disp",       # IVA LIBRE DISP (a favor) → saldo_final
+    5: "credito_fiscal",
+    6: "retenciones_iva",
+    7: "percepciones_iva",
+    9: "saldo_ld_anterior",
+    10: "_iva_pagar",       # IVA A PAGAR → saldo_final if libre_disp absent
+}
+
+
+def _parse_month_str_pdf(s: str) -> tuple[int, int] | None:
+    m = re.match(r"^([A-Za-z]{3})-(\d{2})$", (s or "").strip())
+    if not m:
+        return None
+    month = _PDF_MONTH_ABBR.get(m.group(1).lower())
+    return (month, 2000 + int(m.group(2))) if month else None
+
+
+def _parse_num_pdf(s: str) -> float | None:
+    s = (s or "").strip()
+    if not s or s == "-":
+        return None
+    try:
+        return float(s.replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _store_iva_concept(concept: str, value: float | None, vals: dict) -> None:
+    c = concept.strip().upper()
+    if "IVA DEBITO FISCAL" in c:
+        vals["debito_fiscal"] = value
+    elif "IVA CREDITO FISCAL" in c:
+        vals["credito_fiscal"] = value
+    elif "RETENCIONES IVA" in c:
+        vals["retenciones_iva"] = value
+    elif "PERCEPCIONES IVA" in c:
+        vals["percepciones_iva"] = value
+    elif "IVA LIBRE DISP" in c and "ANT" in c:
+        vals["saldo_ld_anterior"] = value
+    elif "IVA LIBRE DISP" in c:
+        if value is not None:
+            vals.setdefault("saldo_final", value)
+    elif "IVA A PAGAR" in c:
+        if value is not None:
+            vals["saldo_final"] = value
+
+
+def _parse_iva_labeled_text(text: str) -> dict[tuple[int, int], dict[str, float | None]]:
+    """Parse IVA section from a labeled page using text lines."""
+    result: dict[tuple[int, int], dict[str, float | None]] = {}
+    current_month: tuple[int, int] | None = None
+    current_vals: dict[str, float | None] = {}
+
+    for line in text.split("\n"):
+        hdr = re.search(r"CONCEPTO\s+([A-Za-z]{3}-\d{2})\s*$", line)
+        if hdr:
+            if current_month is not None:
+                result[current_month] = current_vals
+            current_month = _parse_month_str_pdf(hdr.group(1))
+            current_vals = {}
+            continue
+
+        if current_month is None:
+            continue
+
+        m = _PDF_CONCEPT_RE.match(line.strip())
+        if m:
+            _store_iva_concept(m.group(1), _parse_num_pdf(m.group(2)), current_vals)
+
+    if current_month is not None:
+        result[current_month] = current_vals
+
+    return result
+
+
+def _parse_iva_value_table(
+    table: list,
+) -> dict[tuple[int, int], dict[str, float | None]]:
+    """Parse a value-only IVA table (continuation months, no concept column)."""
+    header = table[0]
+    month_cols = [
+        (i, key)
+        for i, cell in enumerate(header)
+        if (key := _parse_month_str_pdf(str(cell or ""))) is not None
+    ]
+    if not month_cols:
+        return {}
+
+    result: dict[tuple[int, int], dict[str, float | None]] = {}
+    for col_idx, month_key in month_cols:
+        vals: dict[str, float | None] = {}
+        for row_idx, field in _IVA_VALUE_ROWS.items():
+            if row_idx >= len(table):
+                continue
+            row = table[row_idx]
+            raw = str(row[col_idx] if col_idx < len(row) else "") or ""
+            val = _parse_num_pdf(raw)
+            if field == "_libre_disp":
+                if val is not None:
+                    vals["saldo_final"] = val
+            elif field == "_iva_pagar":
+                if val is not None and "saldo_final" not in vals:
+                    vals["saldo_final"] = val
+            else:
+                vals[field] = val
+        result[month_key] = vals
+
+    return result
+
+
+def read_posiciones_pdf(
+    source: Path | IO | bytes,
+) -> dict[tuple[int, int], dict[str, float | None]]:
+    """
+    Lee el PDF de Posiciones descargado de ARCA.
+    Retorna { (mes, año): { campo_wpp: valor } } — mismo formato que read_posiciones_iva().
+
+    Los valores se almacenan como positivos (igual que el Excel Posiciones),
+    ya que la comparación toma abs(wpp_valor) vs posiciones_valor.
+    """
+    try:
+        import pdfplumber
+    except ImportError as exc:
+        raise ImportError(
+            "pdfplumber es necesario para leer PDFs de ARCA. "
+            "Instalalo con: pip install pdfplumber"
+        ) from exc
+
+    if isinstance(source, bytes):
+        source = BytesIO(source)
+
+    result: dict[tuple[int, int], dict[str, float | None]] = {}
+    in_iva = False
+
+    with pdfplumber.open(source) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            tables = page.extract_tables()
+
+            if "DECLARACION JURADA DE IVA" in text:
+                in_iva = True
+            elif re.search(r"DECLARACION JURADA\s+(DE\s+)?IIBB", text):
+                in_iva = False
+
+            if not in_iva:
+                continue
+
+            has_labeled = any(
+                t and t[0] and any(
+                    isinstance(c, str) and "CONCEPTO" in c.upper() for c in t[0]
+                )
+                for t in tables
+            )
+
+            if has_labeled:
+                result.update(_parse_iva_labeled_text(text))
+            else:
+                for table in tables:
+                    if len(table) == 11:  # IVA value-only tables have 11 rows
+                        result.update(_parse_iva_value_table(table))
+
+    return result

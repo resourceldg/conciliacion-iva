@@ -21,6 +21,7 @@ from conciliacion.posiciones import (
     build_posiciones,
     extract_empresa_wpp,
     read_posiciones_iva,
+    read_posiciones_pdf,
     read_wpp,
 )
 
@@ -29,6 +30,7 @@ from conciliacion.posiciones import (
 DATA_DIR    = Path("data/posiciones")
 DEFAULT_WPP = DATA_DIR / "3- 2026_ WPP.Beta_IVA_Paggunix.xlsx"
 DEFAULT_POS = DATA_DIR / "Posiciones impuestos(1).xlsx"
+DEFAULT_PDF = next(DATA_DIR.glob("*.pdf"), None) if DATA_DIR.exists() else None
 _TOL_CMP    = 0.05
 
 # Signo y label de cada campo al ir a Posiciones (WPP puede ser negativo)
@@ -63,7 +65,9 @@ def _load_empresa(b: bytes, _name: str) -> str:
 
 
 @st.cache_data(show_spinner="Leyendo Posiciones actuales…")
-def _load_pos(b: bytes) -> dict:
+def _load_pos(b: bytes, _ext: str) -> dict:
+    if _ext == "pdf":
+        return read_posiciones_pdf(b)
     return read_posiciones_iva(b)
 
 
@@ -84,6 +88,12 @@ with st.sidebar:
         key="pos_upload",
         help="Archivo base de Posiciones. Se genera una copia actualizada.",
     )
+    cmp_upload = st.file_uploader(
+        "Comparar con (.xlsx o PDF ARCA)",
+        type=["xlsx", "pdf"],
+        key="cmp_upload",
+        help="Excel de Posiciones existente o PDF de DDJJ descargado de ARCA.",
+    )
 
     if wpp_upload is None and DEFAULT_WPP.exists():
         st.caption(f"WPP default: `{DEFAULT_WPP.name}`")
@@ -103,6 +113,21 @@ with st.sidebar:
         pos_source = pos_upload
     else:
         pos_source = None
+
+    # Source for comparison (separate from template)
+    if cmp_upload is not None:
+        cmp_source: Path | object | None = cmp_upload
+        cmp_ext = cmp_upload.name.rsplit(".", 1)[-1].lower()
+    elif DEFAULT_PDF is not None and DEFAULT_PDF.exists():
+        st.caption(f"Comparar default: `{DEFAULT_PDF.name}`")
+        cmp_source = DEFAULT_PDF
+        cmp_ext = "pdf"
+    elif DEFAULT_POS.exists():
+        cmp_source = DEFAULT_POS
+        cmp_ext = "xlsx"
+    else:
+        cmp_source = None
+        cmp_ext = ""
 
     st.divider()
 
@@ -158,10 +183,10 @@ st.markdown(f"""
 # ── Posiciones actuales (lectura silenciosa) ──────────────────────────────────
 
 pos_current: dict = {}
-if pos_source is not None:
+if cmp_source is not None:
     try:
-        pos_bytes_read = _read_bytes(pos_source)
-        pos_current = _load_pos(pos_bytes_read)
+        cmp_bytes = _read_bytes(cmp_source)
+        pos_current = _load_pos(cmp_bytes, cmp_ext)
     except Exception:
         pos_current = {}
 
@@ -208,9 +233,19 @@ vals_pos_mes = pos_current.get(sel_mes, {})
 # PASO 2 · Comparación del período seleccionado
 # ─────────────────────────────────────────────────────────────────────────────
 
+_cmp_label = (
+    "PDF ARCA" if cmp_ext == "pdf"
+    else ("Excel Posiciones" if cmp_source is not None else "sin fuente")
+)
+_cmp_badge = (
+    f"<span style='background:#1e3a2f;color:#4ec9b0;font-size:.7rem;"
+    f"border-radius:3px;padding:.15rem .4rem;margin-left:.6rem'>{_cmp_label}</span>"
+    if cmp_source is not None else ""
+)
 st.markdown(
-    "<div style='font-size:.75rem;color:#858585;text-transform:uppercase;"
-    "letter-spacing:.08em;margin-bottom:.6rem'>PASO 2 · Comparación WPP ↔ Posiciones</div>",
+    f"<div style='font-size:.75rem;color:#858585;text-transform:uppercase;"
+    f"letter-spacing:.08em;margin-bottom:.6rem'>PASO 2 · Comparación WPP ↔ Posiciones"
+    f"{_cmp_badge}</div>",
     unsafe_allow_html=True,
 )
 
