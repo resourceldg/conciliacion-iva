@@ -33,12 +33,20 @@ DEFAULT_POS = DATA_DIR / "Posiciones impuestos(1).xlsx"
 DEFAULT_PDF = next(DATA_DIR.glob("*.pdf"), None) if DATA_DIR.exists() else None
 _TOL_CMP    = 0.05
 
-# Signo y label de cada campo al ir a Posiciones (WPP puede ser negativo)
-_CAMPOS_CMP = {
+# Campos de comparación según fuente
+_CAMPOS_CMP_XLSX = {
     "debito_fiscal":     "Débito Fiscal",
     "credito_fiscal":    "Crédito Fiscal",
     "retenciones_iva":   "Retenciones IVA",
     "percepciones_iva":  "Percepciones IVA",
+    "saldo_ld_anterior": "S/F L.D. Anterior",
+    "saldo_final":       "A Pagar / (A Favor)",
+}
+# F.2051: ret y perc vienen combinadas con pagos a cuenta
+_CAMPOS_CMP_PDF = {
+    "debito_fiscal":     "Débito Fiscal",
+    "credito_fiscal":    "Crédito Fiscal",
+    "ret_perc_total":    "Ret.+Perc. (total ARCA)",
     "saldo_ld_anterior": "S/F L.D. Anterior",
     "saldo_final":       "A Pagar / (A Favor)",
 }
@@ -203,12 +211,18 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Selectbox para ver uno a la vez
-ultimo = periodos[-1]
+# Si hay un F.2051 cargado, sugerir su período; si no, el último del WPP
+_pdf_period = next(iter(pos_current), None) if cmp_ext == "pdf" and pos_current else None
+_default_idx = (
+    periodos.index(_pdf_period)
+    if _pdf_period and _pdf_period in periodos
+    else len(periodos) - 1
+)
+
 sel_mes = st.selectbox(
     "Mes a analizar:",
     options=periodos,
-    index=len(periodos) - 1,
+    index=_default_idx,
     format_func=lambda k: periodo_labels[k],
     label_visibility="collapsed",
 )
@@ -249,9 +263,19 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+_campos_cmp = _CAMPOS_CMP_PDF if cmp_ext == "pdf" else _CAMPOS_CMP_XLSX
+_col_cmp_label = "ARCA (F.2051)" if cmp_ext == "pdf" else "Posiciones actual"
+
 cmp_rows = []
-for campo, label in _CAMPOS_CMP.items():
-    v_wpp_raw = vals_mes.get(campo)
+for campo, label in _campos_cmp.items():
+    if campo == "ret_perc_total":
+        # WPP: suma de retenciones + percepciones (ambos positivos en WPP)
+        r = vals_mes.get("retenciones_iva") or 0
+        p = vals_mes.get("percepciones_iva") or 0
+        v_wpp_raw = (r + p) if (r or p) else None
+    else:
+        v_wpp_raw = vals_mes.get(campo)
+
     v_pos     = vals_pos_mes.get(campo)
     v_wpp_pos = abs(v_wpp_raw) if v_wpp_raw is not None else None
 
@@ -264,12 +288,12 @@ for campo, label in _CAMPOS_CMP.items():
         diff, status = None, "—"
 
     cmp_rows.append({
-        "Concepto":      label,
-        "WPP (valor)":   v_wpp_raw,
-        "WPP → Pos":     v_wpp_pos,
-        "Posiciones":    v_pos,
-        "Diferencia":    diff,
-        "Estado":        status,
+        "Concepto":        label,
+        "WPP (valor)":     v_wpp_raw,
+        "WPP → Cmp":       v_wpp_pos,
+        _col_cmp_label:    v_pos,
+        "Diferencia":      diff,
+        "Estado":          status,
     })
 
 df_cmp = pd.DataFrame(cmp_rows)
@@ -297,8 +321,8 @@ st.dataframe(
         .format(
             {
                 "WPP (valor)": "{:,.2f}",
-                "WPP → Pos":   "{:,.2f}",
-                "Posiciones":  "{:,.2f}",
+                "WPP → Cmp":   "{:,.2f}",
+                _col_cmp_label: "{:,.2f}",
                 "Diferencia":  "{:+,.2f}",
             },
             na_rep="—",
@@ -307,10 +331,10 @@ st.dataframe(
     hide_index=True,
     height=min(340, 45 + 38 * len(df_cmp)),
     column_config={
-        "WPP (valor)": st.column_config.NumberColumn("WPP (original)", format="$ %.2f"),
-        "WPP → Pos":   st.column_config.NumberColumn("WPP → Pos (abs)", format="$ %.2f"),
-        "Posiciones":  st.column_config.NumberColumn("Posiciones actual", format="$ %.2f"),
-        "Diferencia":  st.column_config.NumberColumn("Diferencia", format="$ %.2f"),
+        "WPP (valor)":   st.column_config.NumberColumn("WPP (original)", format="$ %.2f"),
+        "WPP → Cmp":     st.column_config.NumberColumn("WPP (abs)", format="$ %.2f"),
+        _col_cmp_label:  st.column_config.NumberColumn(_col_cmp_label, format="$ %.2f"),
+        "Diferencia":    st.column_config.NumberColumn("Diferencia", format="$ %.2f"),
         "Estado":      st.column_config.TextColumn("", width="small"),
     },
 )
