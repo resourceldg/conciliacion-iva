@@ -1,18 +1,20 @@
 """
 Posiciones IVA
 ==============
-Genera el archivo de Posiciones contables a partir del WPP mensual de IVA.
+Subí el WPP (.xlsx) y el PDF DDJJ de ARCA → genera el Posiciones para ese período.
 
 Flujo:
-  1. Cargar el WPP (Working Papers IVA, con hojas MM-YYYY)
-  2. Ver los valores extraídos por período
-  3. Comparar con el archivo Posiciones actual
-  4. Generar y descargar el Posiciones actualizado
+  1. Leer el período desde el PDF de ARCA
+  2. Extraer los valores de ese período desde el WPP
+  3. Inyectar los valores en el template Posiciones (ajustando la fecha de encabezado)
+  4. Descargar el resultado
 """
 
 import io
+from datetime import datetime
 from pathlib import Path
 
+import openpyxl
 import pandas as pd
 import streamlit as st
 
@@ -21,6 +23,8 @@ from conciliacion.posiciones import (
     MESES_ES,
     DDJJData,
     build_posiciones,
+    extract_empresa_wpp,
+    read_posiciones_pdf,
     read_wpp,
 )
 
@@ -34,28 +38,20 @@ st.set_page_config(
 )
 
 DATA_DIR = Path("data/posiciones")
-DEFAULT_WPP = DATA_DIR / "3- 2026_ WPP.Beta_IVA_Paggunix.xlsx"
-DEFAULT_POS = DATA_DIR / "Posiciones impuestos(1).xlsx"
-
-# ── CSS mínimo ────────────────────────────────────────────────────────────────
+TEMPLATE_PATH = DATA_DIR / "Posiciones.xlsx"
 
 st.markdown("""
 <style>
-  .metric-ok   { color: #15803d; font-weight: bold; }
-  .metric-warn { color: #b45309; font-weight: bold; }
-  .metric-err  { color: #b91c1c; font-weight: bold; }
   thead th { background-color: #1e3a5f !important; color: white !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Título ────────────────────────────────────────────────────────────────────
+# ── Título ─────────────────────────────────────────────────────────────────────
 
 st.title("📋 Posiciones IVA")
-st.caption(
-    "Extrae los datos DDJJ de cada período del WPP y actualiza el archivo de Posiciones."
-)
+st.caption("Subí el WPP y el PDF de ARCA para generar el Posiciones del período indicado en el PDF.")
 
-# ── Sidebar: carga de archivos ────────────────────────────────────────────────
+# ── Sidebar: carga de archivos ─────────────────────────────────────────────────
 
 with st.sidebar:
     st.header("Archivos")
@@ -66,159 +62,184 @@ with st.sidebar:
         key="wpp_upload",
         help="Working Papers del IVA. Un sheet por mes (MM-YYYY).",
     )
-    pos_upload = st.file_uploader(
-        "Posiciones — template (.xlsx)",
-        type=["xlsx"],
-        key="pos_upload",
-        help="Archivo de Posiciones contables. Se actualiza con los datos del WPP.",
+    pdf_upload = st.file_uploader(
+        "DDJJ ARCA (.pdf)",
+        type=["pdf"],
+        key="pdf_upload",
+        help="F.2051 descargado de ARCA. Define el período a generar.",
     )
 
-    # Defaults
-    if wpp_upload is None and DEFAULT_WPP.exists():
-        st.info(f"WPP default:\n`{DEFAULT_WPP.name}`")
-        wpp_source = DEFAULT_WPP
-        wpp_name = DEFAULT_WPP.name
-    elif wpp_upload is not None:
-        wpp_source = wpp_upload
-        wpp_name = wpp_upload.name
-    else:
-        wpp_source = None
-        wpp_name = ""
-
-    if pos_upload is None and DEFAULT_POS.exists():
-        st.info(f"Posiciones default:\n`{DEFAULT_POS.name}`")
-        pos_source = DEFAULT_POS
-    elif pos_upload is not None:
-        pos_source = pos_upload
-    else:
-        pos_source = None
+    wpp_source = wpp_upload or None
+    pdf_source = pdf_upload or None
 
     st.divider()
     st.caption("Módulo independiente del Conciliador IVA.")
 
-# ── Leer WPP ─────────────────────────────────────────────────────────────────
+# ── Validación básica ──────────────────────────────────────────────────────────
 
 if wpp_source is None:
-    st.info("Cargá un archivo WPP en el sidebar para comenzar.")
+    st.info("Cargá el archivo WPP (.xlsx) en el sidebar.")
     st.stop()
 
-@st.cache_data(show_spinner="Leyendo WPP…")
-def _load_wpp(source_bytes: bytes, _name: str) -> DDJJData:
-    return read_wpp(source_bytes)
+if pdf_source is None:
+    st.info("Cargá el PDF de ARCA (.pdf) en el sidebar.")
+    st.stop()
 
-wpp_bytes = (
-    wpp_source.read() if hasattr(wpp_source, "read") else open(wpp_source, "rb").read()
-)
-# Re-open si se leyó el upload (los file_uploader se pueden leer una sola vez)
-if hasattr(wpp_source, "seek"):
-    wpp_source.seek(0)
+if not TEMPLATE_PATH.exists():
+    st.error(f"Template no encontrado: `{TEMPLATE_PATH}`. Asegurate de que exista en `data/posiciones/`.")
+    st.stop()
+
+# ── Leer archivos ──────────────────────────────────────────────────────────────
+
+def _read_bytes(src) -> bytes:
+    if hasattr(src, "read"):
+        b = src.read()
+        if hasattr(src, "seek"):
+            src.seek(0)
+        return b
+    return Path(src).read_bytes()
+
+
+@st.cache_data(show_spinner="Leyendo WPP…")
+def _load_wpp(b: bytes, name: str) -> DDJJData:
+    return read_wpp(b)
+
+
+@st.cache_data(show_spinner="Leyendo PDF ARCA…")
+def _load_pdf(b: bytes, name: str) -> dict:
+    return read_posiciones_pdf(b)
+
+
+wpp_bytes = _read_bytes(wpp_source)
+pdf_bytes = _read_bytes(pdf_source)
 
 try:
-    wpp_data: DDJJData = _load_wpp(wpp_bytes, wpp_name)
+    wpp_data: DDJJData = _load_wpp(wpp_bytes, getattr(wpp_source, "name", "wpp"))
+    pdf_data: dict = _load_pdf(pdf_bytes, getattr(pdf_source, "name", "pdf"))
 except Exception as e:
-    st.error(f"Error leyendo WPP: {e}")
+    st.error(f"Error leyendo archivos: {e}")
     st.stop()
 
 if not wpp_data:
     st.error("No se encontraron hojas de meses (MM-YYYY) en el WPP.")
     st.stop()
 
-# ── Métricas de resumen ───────────────────────────────────────────────────────
+if not pdf_data:
+    st.error("No se pudo determinar el período desde el PDF de ARCA. Verificá que sea un F.2051 válido.")
+    st.stop()
 
-periodos_ok = sorted(wpp_data.keys())
-col1, col2, col3 = st.columns(3)
-col1.metric("Períodos en WPP", len(periodos_ok))
-col2.metric("Primer período", f"{MESES_ES[periodos_ok[0][0]]} {periodos_ok[0][1]}")
-col3.metric("Último período",  f"{MESES_ES[periodos_ok[-1][0]]} {periodos_ok[-1][1]}")
+# ── Determinar período (lo define el PDF) ──────────────────────────────────────
 
-# ── Tabla de valores extraídos ────────────────────────────────────────────────
+(mes, anio) = max(pdf_data.keys(), key=lambda k: (k[1], k[0]))
+periodo_label = f"{MESES_ES[mes]} {anio}"
 
-st.subheader("Valores extraídos del WPP por período")
+if (mes, anio) not in wpp_data:
+    st.error(
+        f"El período **{periodo_label}** indicado por el PDF no está en el WPP. "
+        f"Períodos disponibles: {', '.join(f'{MESES_ES[m]} {a}' for m, a in sorted(wpp_data))}"
+    )
+    st.stop()
 
-rows = []
-for (mes, anio), vals in sorted(wpp_data.items()):
-    row: dict = {"Período": f"{MESES_ES[mes]} {anio}"}
-    for campo, label in CAMPOS_LABELS.items():
-        v = vals.get(campo)
-        row[label] = v
-    rows.append(row)
+# ── Resumen de lo que se va a generar ─────────────────────────────────────────
 
-df_wpp = pd.DataFrame(rows).set_index("Período")
+empresa = extract_empresa_wpp(wpp_bytes)
 
-num_cols = [c for c in df_wpp.columns]
-fmt = {c: "{:,.2f}" for c in num_cols}
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Empresa", empresa or "—")
+col2.metric("Período (del PDF)", periodo_label)
+col3.metric("Períodos en WPP", len(wpp_data))
+col4.metric("Template", TEMPLATE_PATH.name)
 
-st.dataframe(
-    df_wpp.style.format(fmt, na_rep="-"),
-    use_container_width=True,
-    height=min(400, 45 + 35 * len(df_wpp)),
-)
+# ── Valores extraídos del WPP para ese período ────────────────────────────────
 
-with st.expander("Ver campos faltantes por período"):
-    missing_rows = []
-    for (mes, anio), vals in sorted(wpp_data.items()):
-        faltantes = [label for campo, label in CAMPOS_LABELS.items() if campo not in vals]
-        if faltantes:
-            missing_rows.append({
-                "Período": f"{MESES_ES[mes]} {anio}",
-                "Campos faltantes": ", ".join(faltantes),
-            })
-    if missing_rows:
-        st.dataframe(pd.DataFrame(missing_rows), use_container_width=True)
-    else:
-        st.success("Todos los campos encontrados en todos los períodos.")
+st.subheader(f"Valores WPP — {periodo_label}")
+vals = wpp_data[(mes, anio)]
+row_data = {label: vals.get(campo) for campo, label in CAMPOS_LABELS.items()}
+df = pd.DataFrame([row_data])
+fmt = {c: "{:,.2f}" for c in df.columns}
+st.dataframe(df.style.format(fmt, na_rep="-"), use_container_width=True)
 
-# ── Generar Posiciones actualizado ────────────────────────────────────────────
+# ── Generar ────────────────────────────────────────────────────────────────────
 
 st.divider()
-st.subheader("Generar Posiciones actualizado")
-
-if pos_source is None:
-    st.warning("Cargá el archivo de Posiciones (template) en el sidebar.")
-    st.stop()
+st.subheader("Generar Posiciones")
 
 col_btn, col_info = st.columns([1, 3])
 with col_btn:
     generar = st.button("⚙️ Generar", type="primary", use_container_width=True)
 with col_info:
     st.caption(
-        "Escribe los valores del WPP en la copia del template "
-        "sin modificar el archivo original."
+        f"Toma el template `{TEMPLATE_PATH.name}`, actualiza el encabezado a **{periodo_label}** "
+        "y escribe los valores del WPP."
     )
 
 if generar:
-    with st.spinner("Actualizando Posiciones…"):
+    with st.spinner("Generando Posiciones…"):
+        # Cargar template y actualizar la fecha del encabezado al período del PDF
+        tmpl_buf = io.BytesIO(TEMPLATE_PATH.read_bytes())
+        wb_tmpl = openpyxl.load_workbook(tmpl_buf, data_only=False)
+        ws_tmpl = wb_tmpl[next(s for s in wb_tmpl.sheetnames if "IVA" in s.upper())]
+
+        # Actualizar empresa (fila 2, col B) desde el WPP
+        if empresa:
+            for row_cells in ws_tmpl.iter_rows(min_row=2, max_row=2):
+                for cell in row_cells:
+                    if isinstance(cell.value, str) and cell.value.strip():
+                        cell.value = empresa
+                        break
+
+        # Actualizar la fecha en el encabezado de columna al período del PDF
+        for row_cells in ws_tmpl.iter_rows():
+            has_concepto = any(
+                isinstance(c.value, str) and "CONCEPTO" in c.value.upper()
+                for c in row_cells
+            )
+            if has_concepto:
+                for c in row_cells:
+                    if isinstance(c.value, datetime):
+                        c.value = datetime(anio, mes, 1)
+                break
+
+        updated_tmpl = io.BytesIO()
+        wb_tmpl.save(updated_tmpl)
+        updated_tmpl.seek(0)
+
+        # Escribir valores (solo el período del PDF)
         buf = io.BytesIO()
-        pos_bytes = (
-            pos_source.read() if hasattr(pos_source, "read")
-            else open(pos_source, "rb").read()
-        )
-        if hasattr(pos_source, "seek"):
-            pos_source.seek(0)
         try:
-            warns = build_posiciones(pos_bytes, wpp_data, buf)
+            warns = build_posiciones(updated_tmpl, {(mes, anio): vals}, buf)
             st.session_state["pos_bytes"] = buf.getvalue()
             st.session_state["pos_warns"] = warns
+            st.session_state["pos_period"] = (mes, anio)
+            st.session_state["pos_empresa"] = empresa
         except Exception as e:
             st.error(f"Error generando Posiciones: {e}")
             st.stop()
 
-if "pos_bytes" in st.session_state:
-    warns = st.session_state.get("pos_warns", {})
+# ── Resultado ──────────────────────────────────────────────────────────────────
 
-    if warns:
-        with st.expander(f"⚠️ {len(warns)} períodos con advertencias", expanded=True):
-            for period, msgs in sorted(warns.items()):
+if st.session_state.get("pos_period") == (mes, anio) and "pos_bytes" in st.session_state:
+    warns = st.session_state.get("pos_warns", {})
+    real_warns = {
+        p: m for p, m in warns.items()
+        if not all("no encontrado en las columnas" in msg for msg in m)
+    }
+
+    if real_warns:
+        with st.expander(f"⚠️ {len(real_warns)} advertencia(s)", expanded=True):
+            for period, msgs in sorted(real_warns.items()):
                 for msg in msgs:
                     st.warning(f"**{period}:** {msg}")
     else:
-        st.success("Posiciones generado sin advertencias.")
+        st.success(f"Posiciones generado correctamente para {periodo_label}.")
 
+    mes_str = MESES_ES[mes].lower()
+    empresa_slug = st.session_state.get("pos_empresa", "").replace(" ", "_").upper()
+    fname = f"Posiciones_IVA_{empresa_slug}_{mes_str}_{anio}.xlsx" if empresa_slug else f"Posiciones_IVA_{mes_str}_{anio}.xlsx"
     st.download_button(
-        label="📥 Descargar Posiciones_IVA.xlsx",
+        label=f"📥 Descargar {fname}",
         data=st.session_state["pos_bytes"],
-        file_name="Posiciones_IVA_actualizado.xlsx",
+        file_name=fname,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
-        use_container_width=False,
     )

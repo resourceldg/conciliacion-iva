@@ -197,9 +197,7 @@ def build_posiciones(
     if isinstance(output, (str, Path)):
         output = Path(output)
 
-    # data_only=True: lee valores en caché de fórmulas y los guarda como literales.
-    # Evita que openpyxl invalide la caché de celdas con fórmula al guardar.
-    wb = openpyxl.load_workbook(posiciones_source, data_only=True)
+    wb = openpyxl.load_workbook(posiciones_source, data_only=False)
 
     iva_sheets = [s for s in wb.sheetnames if "IVA" in s.upper()]
     if not iva_sheets:
