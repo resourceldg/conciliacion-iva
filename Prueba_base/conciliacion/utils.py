@@ -22,9 +22,32 @@ import pandas as pd
 from .constants import BOOL_COLS, EXT_PREFIXES, NC_ARCA
 
 
+def _fix_mojibake(s) -> str:
+    """Repara texto UTF-8 mal decodificado como Latin-1 (mojibake).
+
+    El export CSV de 'Mis Comprobantes' de ARCA a veces llega con los acentos
+    corruptos (ej: 'DenominaciÃ³n Emisor' en vez de 'Denominación Emisor',
+    'Fecha de EmisiÃ³n' en vez de 'Fecha de Emisión') cuando el CSV UTF-8 se
+    reinterpreta como Latin-1 al convertirlo a XLSX. Esto rompe el emparejamiento
+    de columnas (los nombres con tilde dejan de coincidir con los aliases) y deja
+    campos como Fecha/Tipo/Denominación vacíos en la conciliación.
+
+    Solo reconvierte si detecta el patrón típico de mojibake (Ã/Â) y la
+    reconversión latin-1→utf-8 es válida; en cualquier otro caso devuelve el
+    texto sin tocar para no corromper datos limpios.
+    """
+    s = str(s)
+    if "Ã" not in s and "Â" not in s:
+        return s
+    try:
+        return s.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return s
+
+
 def _normalizar_col(s: str) -> str:
     """Minúsculas, sin acentos, sin puntuación, espacios simples."""
-    s = unicodedata.normalize("NFD", str(s).strip().lower())
+    s = unicodedata.normalize("NFD", _fix_mojibake(s).strip().lower())
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", s)).strip()
 

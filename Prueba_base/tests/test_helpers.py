@@ -23,6 +23,7 @@ import pytest
 
 from conciliacion.utils import (
     _normalizar_col,
+    _fix_mojibake,
     _combinar_cols,
     _restore_bools,
     _agg_total,
@@ -31,8 +32,8 @@ from conciliacion.utils import (
     _detectar_periodo,
     _hash_s1,
 )
-from conciliacion.column_mapping import _detectar_cols_multi
-from conciliacion.constants import BOOL_COLS
+from conciliacion.column_mapping import _detectar_cols_multi, sugerir_mapeo
+from conciliacion.constants import BOOL_COLS, CAMPOS_ARCA, ALIASES_ARCA
 
 
 # ── _normalizar_col ───────────────────────────────────────────────────────────
@@ -262,14 +263,81 @@ class TestEsNotaCreditoArca:
     def test_nc_con_codigo_arca(self):
         assert _es_nota_credito_arca("3 - Nota de Crédito A") is True
 
+    def test_nc_plural_export_csv(self):
+        # El export CSV de "Mis Comprobantes" usa la forma plural
+        assert _es_nota_credito_arca("Notas de Crédito A") is True
+        assert _es_nota_credito_arca("NOTAS DE CREDITO A") is True
+
     def test_factura_no_es_nc(self):
         assert _es_nota_credito_arca("Factura A") is False
 
     def test_nota_debito_no_es_nc(self):
         assert _es_nota_credito_arca("Nota de Débito A") is False
+        assert _es_nota_credito_arca("Notas de Débito A") is False
 
     def test_string_vacio_no_es_nc(self):
         assert _es_nota_credito_arca("") is False
+
+
+# ── _fix_mojibake ─────────────────────────────────────────────────────────────
+
+class TestFixMojibake:
+    def test_repara_o_acentuada(self):
+        assert _fix_mojibake("DenominaciÃ³n Emisor") == "Denominación Emisor"
+
+    def test_repara_fecha_emision(self):
+        assert _fix_mojibake("Fecha de EmisiÃ³n") == "Fecha de Emisión"
+
+    def test_repara_u_acentuada(self):
+        assert _fix_mojibake("NÃºmero Desde") == "Número Desde"
+
+    def test_texto_limpio_sin_cambios(self):
+        assert _fix_mojibake("Nro. Doc. Emisor") == "Nro. Doc. Emisor"
+
+    def test_acento_real_no_se_toca(self):
+        # Un texto ya correcto con tilde no contiene el patrón Ã/Â → intacto
+        assert _fix_mojibake("Denominación Emisor") == "Denominación Emisor"
+
+    def test_no_string(self):
+        assert _fix_mojibake(123) == "123"
+
+
+# ── sugerir_mapeo con export CSV de ARCA (mojibake + nombres largos) ───────────
+
+class TestSugerirMapeoArcaCSV:
+    """El export CSV de 'Mis Comprobantes' usa nombres largos y a veces mojibake.
+
+    Fecha/Tipo/Denominación deben resolverse por alias/exact (no fuzzy), porque
+    la UI descarta las sugerencias fuzzy en campos opcionales, dejándolos vacíos
+    en la hoja 'Solo en ARCA'.
+    """
+    COLS_CSV = [
+        "Fecha de Emisión", "Tipo de Comprobante", "Punto de Venta",
+        "Número Desde", "Número Hasta", "Nro. Doc. Emisor",
+        "Denominación Emisor", "Tipo Cambio", "Otros Tributos",
+        "Total IVA", "Imp. Total",
+    ]
+
+    def test_fecha_tipo_denom_no_son_fuzzy(self):
+        _, conf = sugerir_mapeo(self.COLS_CSV, CAMPOS_ARCA, ALIASES_ARCA)
+        for campo in ("fecha", "tipo", "denominacion"):
+            assert conf[campo] in ("exact", "norm", "alias"), \
+                f"{campo} cayó a {conf[campo]!r} y se blanquearía en la UI"
+
+    def test_tipo_no_confunde_con_tipo_cambio(self):
+        sug, _ = sugerir_mapeo(self.COLS_CSV, CAMPOS_ARCA, ALIASES_ARCA)
+        assert sug["tipo"] == "Tipo de Comprobante"
+
+    def test_headers_con_mojibake_mapean_igual(self):
+        # Simula headers crudos con mojibake como llegan del xlsx
+        cols_moji = ["Fecha de EmisiÃ³n", "Tipo de Comprobante", "Punto de Venta",
+                     "NÃºmero Desde", "Número Hasta", "Nro. Doc. Emisor",
+                     "DenominaciÃ³n Emisor", "Tipo Cambio", "Otros Tributos",
+                     "Total IVA", "Imp. Total"]
+        cols_fixed = [_fix_mojibake(c) for c in cols_moji]
+        _, conf = sugerir_mapeo(cols_fixed, CAMPOS_ARCA, ALIASES_ARCA)
+        for campo in ("fecha", "tipo", "denominacion"):
+            assert conf[campo] in ("exact", "norm", "alias")
 
 
 # ── _detectar_periodo ─────────────────────────────────────────────────────────

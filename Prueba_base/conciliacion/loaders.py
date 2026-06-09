@@ -29,7 +29,7 @@ from .constants import (
     CAMPOS_ARCA, CAMPOS_LISTADO, MAPEOS_DEFAULT,
 )
 from .file_reader import _mejor_hoja, _find_header, leer_excel, _detectar_formato_colppy
-from .utils import _agg_total, _combinar_cols, _es_nota_credito_arca, _origen_from_cuit_tipo
+from .utils import _agg_total, _combinar_cols, _es_nota_credito_arca, _fix_mojibake, _origen_from_cuit_tipo
 
 
 def _load_libro_iva(source) -> "pd.DataFrame | None":
@@ -48,7 +48,7 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
     hr = _find_header(sheet, "Comprobante", ["Suc.", "Numero", "Proveedor", "Nro.Doc.", "Nro Factura", "Nro Factur"])
     if hr is None:
         hr = 0
-    header_cols = [str(c).strip() for c in sheet.iloc[hr]]
+    header_cols = [_fix_mojibake(c).strip() for c in sheet.iloc[hr]]
 
     df = sheet.iloc[hr + 1:].copy()
     df.columns = header_cols
@@ -272,7 +272,7 @@ def _load_subdiario_iva(source) -> "pd.DataFrame | None":
     sheet = _mejor_hoja(raw)
 
     df = sheet.copy()
-    df.columns = [str(c).strip() for c in sheet.iloc[0]]
+    df.columns = [_fix_mojibake(c).strip() for c in sheet.iloc[0]]
     df = df.iloc[1:].reset_index(drop=True)
 
     comp_raw = df.get("N° de comprobante", df.get("N°  de comprobante", pd.Series("", index=df.index))).astype(str).str.strip()
@@ -376,7 +376,7 @@ def _load_pasion_iva(source) -> "pd.DataFrame | None":
     sheet = _mejor_hoja(raw)
 
     df = sheet.copy()
-    df.columns = [str(c).strip() for c in sheet.iloc[0]]
+    df.columns = [_fix_mojibake(c).strip() for c in sheet.iloc[0]]
     df = df.iloc[1:].reset_index(drop=True)
 
     # Pasión puede exportar decimales con coma (ej. "3195164,07") en algunas columnas
@@ -499,7 +499,7 @@ def _load_tango_iva(source) -> "pd.DataFrame | None":
     sheet = _mejor_hoja(raw)
 
     df = sheet.copy()
-    df.columns = [str(c).strip() for c in sheet.iloc[0]]
+    df.columns = [_fix_mojibake(c).strip() for c in sheet.iloc[0]]
     df = df.iloc[1:].reset_index(drop=True)
 
     # Filtrar filas sin N_COMP válido (filas de totales al final)
@@ -586,7 +586,7 @@ def _load_libro_iva_bim(source) -> "pd.DataFrame | None":
         st.error("No se encontró el encabezado en el Libro IVA (B.Imponible).")
         return None
 
-    header_cols = [str(c).strip() for c in sheet.iloc[hr]]
+    header_cols = [_fix_mojibake(c).strip() for c in sheet.iloc[hr]]
     df = sheet.iloc[hr + 1:].copy()
     df.columns = header_cols
     df = df.reset_index(drop=True)
@@ -783,7 +783,7 @@ def load_listado_iva(source, mapeo: dict | None = None):
     df.columns = df.iloc[hr]
     df = df.iloc[hr + 1:].reset_index(drop=True)
     df.columns.name = None
-    df.columns = [str(c).strip() for c in df.columns]
+    df.columns = [_fix_mojibake(c).strip() for c in df.columns]
 
     _renames = {"Perc. IIBB": "Perc_IIBB", "Perc. IVA": "Perc_IVA"}
     for _spec, _dst in [
@@ -903,7 +903,7 @@ def load_arca(source, mapeo: dict | None = None):
     df.columns = df.iloc[hr]
     df = df.iloc[hr + 1:].reset_index(drop=True)
     df.columns.name = None
-    df.columns = [str(c).strip() for c in df.columns]
+    df.columns = [_fix_mojibake(c).strip() for c in df.columns]
 
     col_pto  = col.get("punto_venta", "Punto de Venta") or "Punto de Venta"
     col_num  = col.get("numero",      "Número Desde")  or "Número Desde"

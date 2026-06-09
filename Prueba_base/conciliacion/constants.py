@@ -45,8 +45,10 @@ BOOL_COLS = {
 
 # ── Tipos de comprobante especiales ──────────────────────────────────────────
 
-# ARCA exporta estos valores en el campo "Tipo" para Notas de Crédito
-NC_ARCA = {"nota de crédito", "nota de credito"}
+# ARCA exporta estos valores en el campo "Tipo" para Notas de Crédito.
+# Incluye forma singular ("3 - Nota de Crédito A", export XLSX) y plural
+# ("Notas de Crédito A", export CSV de Mis Comprobantes).
+NC_ARCA = {"nota de crédito", "nota de credito", "notas de crédito", "notas de credito"}
 
 # Prefijos Colppy que corresponden a facturas del exterior (FCC/FCE)
 EXT_PREFIXES = {"fcc-a", "fcc-b", "fcc-c", "fce-a", "fce-b", "fce-c"}
@@ -140,9 +142,10 @@ ALIASES_ARCA: dict[str, list[str]] = {
     "punto_venta":     ["punto de venta", "pto venta", "pto de venta", "punto venta", "ptoventa"],
     "numero":          ["numero desde", "nro desde", "numero", "nro",
                         "num desde", "numero comprobante"],
-    "fecha":           ["fecha", "fecha cbte", "fecha comprobante"],
-    "tipo":            ["tipo", "tipo comprobante", "codigo de comprobante",
-                        "cod comprobante", "codigo", "clase"],
+    "fecha":           ["fecha", "fecha cbte", "fecha comprobante",
+                        "fecha de emision", "fecha emision"],
+    "tipo":            ["tipo", "tipo comprobante", "tipo de comprobante",
+                        "codigo de comprobante", "cod comprobante", "codigo", "clase"],
     "cuit_emisor":     ["nro doc emisor", "nro. doc. emisor", "cuit emisor", "cuit",
                         "documento emisor", "cuit/dni emisor"],
     "denominacion":    ["denominacion emisor", "denominación emisor",

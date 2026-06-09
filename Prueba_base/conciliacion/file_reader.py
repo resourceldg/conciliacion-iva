@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from .utils import _fix_mojibake
+
 
 def _find_libreoffice() -> str:
     """Devuelve el ejecutable de LibreOffice según el sistema operativo.
@@ -235,7 +237,8 @@ def _detectar_columnas(source, header_keyword: str,
         hr    = _find_header(sheet, header_keyword, fallbacks)
         if hr is None:
             hr = 0
-        cols = [str(c).strip() for c in sheet.iloc[hr] if str(c).strip() and str(c) != "nan"]
+        cols = [_fix_mojibake(c).strip() for c in sheet.iloc[hr]
+                if str(c).strip() and str(c) != "nan"]
         if hasattr(source, "seek"):
             source.seek(0)
         return cols
