@@ -947,7 +947,10 @@ def load_arca(source, mapeo: dict | None = None):
         if col_i in df.columns:
             df[col_i] = pd.to_numeric(df[col_i], errors="coerce").fillna(0)
 
-    col_tipo = c.get("tipo", "Tipo")
+    # Fallback al nombre estándar si el mapeo viene vacío (campo opcional sin
+    # mapear en la UI): sin Tipo no se detectan las NC y los importes de ARCA
+    # quedan con signo incorrecto.
+    col_tipo = c.get("tipo") or "Tipo"
     if col_tipo and col_tipo in df.columns:
         df["es_NC"] = df[col_tipo].apply(_es_nota_credito_arca)
     else:
@@ -1047,9 +1050,9 @@ def load_arca(source, mapeo: dict | None = None):
     else:
         df["Tipo_Doc_ARCA"] = ""
 
-    c_fecha = c.get("fecha", "Fecha")
-    c_cuit  = c.get("cuit_emisor",  "Nro. Doc. Emisor")
-    c_denom = c.get("denominacion", "Denominación Emisor")
+    c_fecha = c.get("fecha") or "Fecha"
+    c_cuit  = c.get("cuit_emisor") or "Nro. Doc. Emisor"
+    c_denom = c.get("denominacion") or "Denominación Emisor"
     col_std = {
         c_tiva: "Total IVA", c_ot: "Otros Tributos", c_tot: "Imp. Total",
     }

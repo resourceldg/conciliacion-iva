@@ -196,7 +196,15 @@ def _selectbox_col(label: str, col_sug: str, cols: list, key: str,
     else:
         opts = ([col_sug] if col_sug else []) + base
     if not required:
-        opts = [_NO_MAPEAR] + [c for c in opts if c != _NO_MAPEAR]
+        # Con sugerencia confiable, esa columna queda como default y
+        # "sin mapear" pasa a segunda opción. Si el campo opcional arranca
+        # sin mapear, p.ej. Tipo, la app pierde la detección de NC aunque
+        # la columna exista en el archivo. (Los callers ya vacían col_sug
+        # cuando la confianza es fuzzy.)
+        if col_sug and col_sug in cols:
+            opts = [col_sug, _NO_MAPEAR] + [c for c in base if c != _NO_MAPEAR]
+        else:
+            opts = [_NO_MAPEAR] + [c for c in opts if c != _NO_MAPEAR]
     sel = st.selectbox(label, opts or cols, index=0, key=key,
                        label_visibility="collapsed")
     return "" if sel == _NO_MAPEAR else sel
