@@ -903,7 +903,7 @@ def load_arca(source, mapeo: dict | None = None):
     col = mapeo["columnas"]
 
     raw   = leer_excel(source)
-    sheet = _mejor_hoja(raw)
+    sheet = _mejor_hoja(raw, mapeo.get("header_keyword", "Punto de Venta"))
     hr    = _find_header(sheet, mapeo.get("header_keyword", "Punto de Venta"))
     if hr is None:
         st.error(f"No se encontró encabezado '{mapeo.get('header_keyword','Punto de Venta')}' en Mis Comprobantes ARCA.")

@@ -149,14 +149,30 @@ def leer_excel(source) -> dict:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _mejor_hoja(raw: dict) -> pd.DataFrame:
+def _mejor_hoja(raw: dict, header_keyword: str | None = None) -> pd.DataFrame:
     """Selecciona la hoja de datos más relevante de un dict {nombre: DataFrame}.
 
-    Prioriza hojas nombradas con keywords conocidos de Colppy; en su defecto
-    retorna la hoja con más filas (descarta hojas de parámetros/config).
+    Si se indica `header_keyword`, prioriza la hoja que contenga una celda
+    exactamente igual a esa keyword: un workbook puede traer hojas ajenas
+    (ej. un export de ARCA con una copia del Libro IVA pegada en otra hoja),
+    y el nombre de hoja solo no alcanza para distinguirlas.
+    En su defecto prioriza hojas nombradas con keywords conocidos de Colppy,
+    y como último recurso la hoja con más filas.
     """
     if len(raw) == 1:
         return next(iter(raw.values()))
+    if header_keyword:
+        kw = header_keyword.strip().lower()
+        for df in raw.values():
+            try:
+                head = df.head(30)
+                if head.apply(
+                    lambda r: (r.astype(str).str.strip().str.lower() == kw).any(),
+                    axis=1,
+                ).any():
+                    return df
+            except Exception:
+                pass
     _prio_kw = ["libro iva", "listado iva", "iva compras", "comprobantes", "datos"]
     for name, df in raw.items():
         name_l = str(name).lower()
@@ -167,14 +183,25 @@ def _mejor_hoja(raw: dict) -> pd.DataFrame:
 
 def _find_header(sheet: pd.DataFrame, keyword: str,
                  fallbacks: list[str] | None = None) -> int:
-    """Busca la primera fila que contenga `keyword` y retorna su índice.
+    """Busca la fila de encabezado y retorna su índice.
 
     Colppy y ARCA insertan filas de metadatos antes del encabezado real,
     por lo que no se puede asumir que la fila 0 es el header.
     Si no se encuentra `keyword`, intenta con `fallbacks` en orden.
     Retorna None si no encuentra ninguna de las palabras clave.
+
+    Dos pases: primero igualdad exacta de celda (un encabezado real es una
+    celda igual al keyword), después substring como red de seguridad. El pase
+    exacto evita que una anotación libre en una fila de datos (ej. una celda
+    "N° de comprobante correcto 3008-57124") se confunda con el encabezado.
     """
-    for kw in [keyword] + (fallbacks or []):
+    kws = [keyword] + (fallbacks or [])
+    for kw in kws:
+        kw_n = str(kw).strip().lower()
+        for i, row in sheet.iterrows():
+            if (row.astype(str).str.strip().str.lower() == kw_n).any():
+                return i
+    for kw in kws:
         for i, row in sheet.iterrows():
             if row.astype(str).str.contains(kw, case=False, na=False).any():
                 return i
@@ -233,7 +260,7 @@ def _detectar_columnas(source, header_keyword: str,
     """
     try:
         raw   = leer_excel(source)
-        sheet = _mejor_hoja(raw)
+        sheet = _mejor_hoja(raw, header_keyword)
         hr    = _find_header(sheet, header_keyword, fallbacks)
         if hr is None:
             hr = 0
