@@ -502,6 +502,16 @@ def _load_tango_iva(source) -> "pd.DataFrame | None":
     df.columns = [_fix_mojibake(c).strip() for c in sheet.iloc[0]]
     df = df.iloc[1:].reset_index(drop=True)
 
+    # La detección de formato usa substring ("n_comp" matchea variantes como
+    # "N_COMP."), pero este loader necesita las columnas con nombre exacto.
+    _faltantes_tango = [c for c in ("N_COMP", "T_COMP") if c not in df.columns]
+    if _faltantes_tango:
+        st.error(
+            f"Columnas no encontradas en el archivo Tango: {_faltantes_tango}. "
+            "Verificá que sea el export estándar de Tango Gestión."
+        )
+        return None
+
     # Filtrar filas sin N_COMP válido (filas de totales al final)
     comp_raw = df["N_COMP"].astype(str).str.strip()
     valid_comp = comp_raw.str.match(r"^[A-Za-z]\d{13}$")
@@ -1008,9 +1018,9 @@ def load_arca(source, mapeo: dict | None = None):
 
     sin_desglose = (df["Neto_Total_ARCA"] == 0) & (_col_tot_series != 0)
     df.loc[sin_desglose, "Neto_Total_ARCA"] = (
-        df.loc[sin_desglose, c_tot]
-        - df.loc[sin_desglose, c_tiva]
-        - df.loc[sin_desglose, c_ot]
+        _col_tot_series[sin_desglose]
+        - _col_tiva_s[sin_desglose]
+        - _col_ot_s[sin_desglose]
     )
     # Marcar como derivado: Factura C (sin desglose), doble conteo, y comprobantes
     # donde el importe es íntegramente exento/no-gravado (Neto Gravado ≈ 0).

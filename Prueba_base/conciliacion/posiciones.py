@@ -387,7 +387,9 @@ def _parse_f2051_page(text: str) -> dict[tuple[int, int], dict[str, float | None
     Parsea una página del F.2051 IVA de ARCA.
     Extrae: débito, crédito, saldo LD anterior, ret+perc total, saldo final.
     """
-    m = re.search(r"Per[ií]odo\b[^\n]*\n(\d{6})\b", text)
+    # El código de 6 dígitos puede venir en la misma línea que "Período" o en
+    # la siguiente, según cómo pdfplumber reconstruya el layout del PDF.
+    m = re.search(r"Per[ií]odo\b[^\n]*?\n?\s*(\d{6})\b", text)
     if not m:
         return {}
     period_key = _parse_period_arca(m.group(1))

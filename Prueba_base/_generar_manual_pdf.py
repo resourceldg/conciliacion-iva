@@ -298,7 +298,7 @@ pdf.h3("Estructura esperada de la carpeta del proyecto")
 
 pdf.code_block([
     "C:\\Trabajo\\ConciliacionIVA\\            <- carpeta raiz (nombre libre)",
-    "    app_conciliacion_iva.py",
+    "    app.py",
     "    inicio.bat                          <- lanzador principal",
     "    crear_acceso_directo.bat            <- genera acceso en Escritorio",
     "    _crear_icono.py                     <- genera icon.ico (sin dependencias)",
@@ -524,14 +524,14 @@ pdf.body(
 pdf.code_block([
     "cd C:\\Trabajo\\ConciliacionIVA",
     ".venv\\Scripts\\activate",
-    "streamlit run app_conciliacion_iva.py --server.fileWatcherType none",
+    "streamlit run app.py --server.fileWatcherType none",
 ])
 
 pdf.h3("Guardar el log en un archivo")
 pdf.code_block([
     "cd C:\\Trabajo\\ConciliacionIVA",
     ".venv\\Scripts\\activate",
-    "streamlit run app_conciliacion_iva.py --server.fileWatcherType none > log.txt 2>&1",
+    "streamlit run app.py --server.fileWatcherType none > log.txt 2>&1",
     "",
     "# Ver el log en tiempo real en otra terminal:",
     "powershell Get-Content log.txt -Wait",
@@ -564,7 +564,7 @@ pdf.h1("7   Actualizacion y mantenimiento")
 
 pdf.h3("Actualizar la aplicacion")
 pdf.body("Para actualizar a una nueva version sin perder el historial ni las reglas:")
-pdf.bullet("Copiar el nuevo app_conciliacion_iva.py en la carpeta del proyecto.")
+pdf.bullet("Copiar el nuevo app.py en la carpeta del proyecto.")
 pdf.bullet("No tocar la carpeta data\\ : contiene la base de datos y el historial.")
 pdf.bullet("Ejecutar inicio.bat normalmente; si hay dependencias nuevas las instala solo.")
 pdf.ln(1)

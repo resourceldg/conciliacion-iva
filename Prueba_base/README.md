@@ -127,7 +127,7 @@ Cada tab en la UI también ofrece descarga CSV de la **vista filtrada actual**.
 
 ```
 Prueba_base/
-├── app_conciliacion_iva.py      # Aplicación principal (único archivo de lógica)
+├── app.py                       # Entry point (st.navigation registra las páginas)
 ├── inicio.bat                   # Lanzador Windows (instala deps la primera vez, luego corre)
 ├── run.sh                       # Lanzador Linux/Mac
 ├── requirements.txt

@@ -113,13 +113,16 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     # ── Fallback: mismo comprobante, CUIT vía NroDoc_norm ────────────────────
     # Cuando el CUIT registrado en el Listado difiere del Nro. Doc. Emisor de ARCA
     # (ej.: Benvido), se reintenta el join usando la columna Nro. Doc. del Listado.
+    # Las filas no matcheadas se extraen del propio merge (columnas del Listado),
+    # nunca filtrando listado_nac por Comprobante: dos proveedores pueden compartir
+    # número y eso duplicaría la fila que sí matcheó.
+    _listado_cols = [c for c in listado_nac.columns if c in merged_nac.columns]
     if "NroDoc_norm" in listado_nac.columns:
         _unm_mask = merged_nac["ARCA_Key"].isna()
         if _unm_mask.any():
             _used_keys   = set(merged_nac["ARCA_Key"].dropna())
             _arca_for_fb = arca_slim[~arca_slim["ARCA_Key"].isin(_used_keys)]
-            _unm_comps   = set(merged_nac.loc[_unm_mask, "Comprobante"])
-            _unm_l       = listado_nac[listado_nac["Comprobante"].isin(_unm_comps)].copy()
+            _unm_l       = merged_nac.loc[_unm_mask, _listado_cols].copy()
             if not _unm_l.empty and not _arca_for_fb.empty:
                 _fb = pd.merge(
                     _unm_l, _arca_for_fb,
@@ -141,8 +144,7 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     if _unm_mask_cuit.any():
         _used_keys_c   = set(merged_nac["ARCA_Key"].dropna())
         _arca_for_cuit = arca_slim[~arca_slim["ARCA_Key"].isin(_used_keys_c)]
-        _unm_comps_c   = set(merged_nac.loc[_unm_mask_cuit, "Comprobante"])
-        _unm_l_c       = listado_nac[listado_nac["Comprobante"].isin(_unm_comps_c)].copy()
+        _unm_l_c       = merged_nac.loc[_unm_mask_cuit, _listado_cols].copy()
         if not _unm_l_c.empty and not _arca_for_cuit.empty:
             _fb_cuit = pd.merge(
                 _unm_l_c, _arca_for_cuit,

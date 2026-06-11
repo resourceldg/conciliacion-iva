@@ -73,8 +73,10 @@ def _load_empresa(b: bytes, _name: str) -> str:
 
 
 @st.cache_data(show_spinner="Leyendo Posiciones actuales…")
-def _load_pos(b: bytes, _ext: str) -> dict:
-    if _ext == "pdf":
+def _load_pos(b: bytes, ext: str) -> dict:
+    # ext SIN prefijo "_": debe formar parte del hash de caché — los mismos
+    # bytes con extensión distinta requieren un parser distinto.
+    if ext == "pdf":
         return read_posiciones_pdf(b)
     return read_posiciones_iva(b)
 
@@ -397,11 +399,18 @@ if generar:
             st.session_state["pos_bytes"] = buf.getvalue()
             st.session_state["pos_warns"] = warns
             st.session_state["pos_empresa"] = empresa
+            st.session_state["pos_gen_key"] = (wpp_name, tuple(sorted(sel_exportar)))
         except Exception as e:
             st.error(f"Error generando Posiciones: {e}")
             st.stop()
 
-if "pos_bytes" in st.session_state:
+# Mostrar la descarga solo si lo generado corresponde al WPP y a los meses
+# actualmente seleccionados — evita entregar un archivo de otra selección.
+_gen_key_actual = (wpp_name, tuple(sorted(sel_exportar)))
+if (
+    "pos_bytes" in st.session_state
+    and st.session_state.get("pos_gen_key") == _gen_key_actual
+):
     warns = st.session_state.get("pos_warns", {})
     _empresa_dl = st.session_state.get("pos_empresa", empresa)
 

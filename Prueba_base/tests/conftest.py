@@ -12,8 +12,8 @@ from unittest.mock import MagicMock
 import pytest
 
 # ── 1. Mock de Streamlit ──────────────────────────────────────────────────────
-# Debe ocurrir antes de cualquier `import app_conciliacion_iva` o
-# `import conciliacion.*`, porque todos ellos hacen `import streamlit`.
+# Debe ocurrir antes de cualquier `import conciliacion.*`,
+# porque varios de esos módulos hacen `import streamlit`.
 
 
 class _SessionState(dict):
@@ -44,20 +44,13 @@ _st.columns.side_effect = _mock_columns
 
 sys.modules["streamlit"] = _st
 
-# ── 2. Importar el módulo (el código de nivel superior se ejecuta aquí) ───────
-import app_conciliacion_iva as app  # noqa: E402
-
-
-# ── 3. Fixture: base de datos SQLite temporal ─────────────────────────────────
+# ── 2. Fixture: base de datos SQLite temporal ─────────────────────────────────
 
 @pytest.fixture()
 def tmp_db(tmp_path, monkeypatch):
     """
     Redirige DB_FILE y DATA_DIR a un directorio temporal.
     Crea las tablas limpias y bloquea la migración legacy.
-
-    Parchea tanto los módulos internos (donde se ejecuta el código)
-    como el namespace de app (compatibilidad con tests existentes).
     """
     import conciliacion.database as _db_mod
     import conciliacion.constants as _const_mod
@@ -72,13 +65,8 @@ def tmp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(_const_mod, "DATA_DIR",   tmp_path)
     monkeypatch.setattr(_const_mod, "PERSIST_DIR", tmp_path / "persistencia")
 
-    # Compat: el conftest anterior parcheaba `app.*`
-    monkeypatch.setattr(app, "DB_FILE",    db)
-    monkeypatch.setattr(app, "DATA_DIR",   tmp_path)
-    monkeypatch.setattr(app, "PERSIST_DIR", tmp_path / "persistencia")
-
     # Evitar que _migrar_legacy() intente leer archivos legacy
     (tmp_path / ".db_migrated").touch()
 
-    app.init_db()
+    _db_mod.init_db()
     return db

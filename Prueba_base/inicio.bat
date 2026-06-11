@@ -83,7 +83,7 @@ echo   Presiona Ctrl+C para cerrar la app.
 echo ================================================
 echo.
 
-streamlit run app_conciliacion_iva.py --server.fileWatcherType none
+streamlit run app.py --server.fileWatcherType none
 
 echo.
 echo La app se cerro.

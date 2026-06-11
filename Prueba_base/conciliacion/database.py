@@ -414,8 +414,13 @@ def cargar_csv():
         return None, None, None, {}
 
 
-def guardar_csv(s1, s2, s3, tolerancia: float) -> bool:
-    """Persiste la conciliación en SQLite. Retorna True si hubo cambios respecto al snapshot anterior."""
+def guardar_csv(s1, s2, s3, tolerancia: float) -> str:
+    """Persiste la conciliación en SQLite.
+
+    Retorna "saved" si se guardó un snapshot nuevo, "unchanged" si el resultado
+    es idéntico al anterior, o "error" si la escritura falló — la UI debe
+    distinguir los tres casos para no reportar un fallo como "sin cambios".
+    """
     try:
         con  = _db_con()
         prev = con.execute(
@@ -430,7 +435,7 @@ def guardar_csv(s1, s2, s3, tolerancia: float) -> bool:
 
         if _hash_s1(s1) == _hash_s1(prev_s1):
             con.close()
-            return False
+            return "unchanged"
 
         ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
         periodo = _detectar_periodo(s1)
@@ -449,9 +454,10 @@ def guardar_csv(s1, s2, s3, tolerancia: float) -> bool:
         )
         con.commit()
         con.close()
-        return True
-    except Exception:
-        return False
+        return "saved"
+    except Exception as e:
+        print(f"[ERROR guardar_csv] {e}", file=sys.stderr)
+        return "error"
 
 
 def listar_historicos() -> list[dict]:

@@ -268,7 +268,7 @@ if procesar:
         st.stop()
 
     df_listado = df_arca = s1 = s2 = s3 = None
-    hubo_cambio = False
+    _save_status = "unchanged"
     _recon_warns: list[dict] = []
     with st.status("Procesando conciliación...", expanded=True) as _proc_status:
         try:
@@ -295,7 +295,7 @@ if procesar:
                 _proc_status.update(label="Cruzando comprobantes...")
                 s1, s2, s3, _recon_warns = conciliar(df_listado, df_arca, tolerancia, extra_cols=_extra_cols)
                 _proc_status.update(label="Guardando resultado...")
-                hubo_cambio = guardar_csv(s1, s2, s3, tolerancia)
+                _save_status = guardar_csv(s1, s2, s3, tolerancia)
                 _proc_status.update(label="Conciliación completada", state="complete", expanded=False)
             else:
                 _proc_status.update(label="No se pudo procesar — revisá los errores", state="error")
@@ -323,10 +323,15 @@ if procesar:
         "_hist_loaded_ts": None,
         "_excel_hash":     None,
     })
-    if hubo_cambio:
+    if _save_status == "saved":
         st.success("Snapshot histórico guardado.")
-    else:
+    elif _save_status == "unchanged":
         st.info("Sin cambios respecto al resultado anterior.")
+    else:
+        st.warning(
+            "El resultado se procesó pero **no se pudo guardar** el snapshot "
+            "histórico. Revisá permisos de escritura en la carpeta `data/`."
+        )
 
 elif cargar_prev and prev_s1 is not None:
     tol_prev = float(prev_meta.get("tolerancia", TOLERANCIA_DEFAULT))
