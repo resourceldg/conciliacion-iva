@@ -405,7 +405,17 @@ if st.session_state.get("loaded"):
     n_dif     = int((s1_export["Estado"] == "Diferencia detectada").sum())
     n_sl      = int((~s1_export["Existe_en_ARCA"]).sum())
     n_sa      = len(s3)
-    n_nc      = int(s1_export.get("ARCA_es_NC", pd.Series(dtype=bool)).sum())
+    _nc_arca_k = (
+        s1_export["ARCA_es_NC"] == True
+        if "ARCA_es_NC" in s1_export.columns
+        else pd.Series(False, index=s1_export.index)
+    )
+    _nc_listado_k = (
+        s1_export["Tipo_Doc"].astype(str).str.upper().str.startswith("NC")
+        if "Tipo_Doc" in s1_export.columns
+        else pd.Series(False, index=s1_export.index)
+    )
+    n_nc      = int((_nc_arca_k | _nc_listado_k).sum())
     n_ext     = int((s1_export["Estado"] == "Exterior / No en ARCA").sum())
     n_rev     = int((s1_export["Estado"] == "Revisado / Aceptado").sum())
     n_cuit_dif = int((s1_export["Estado"] == "CUIT no coincide").sum())
@@ -424,7 +434,7 @@ if st.session_state.get("loaded"):
       {_kpi_cuit}
       <div class="kpi re"><div class="n">{n_sl}</div><div class="l">Solo Listado</div></div>
       <div class="kpi re"><div class="n">{n_sa}</div><div class="l">Solo ARCA</div></div>
-      <div class="kpi pu"><div class="n">{n_nc}</div><div class="l">NC ARCA</div></div>
+      <div class="kpi pu"><div class="n">{n_nc}</div><div class="l">NC totales</div></div>
       <div class="kpi or"><div class="n">{n_ext}</div><div class="l">Ext. s/ARCA</div></div>
       <div class="kpi bl"><div class="n">{n_rev}</div><div class="l">Revisados</div></div>
     </div>
@@ -461,7 +471,7 @@ if st.session_state.get("loaded"):
     with col_inf:
         st.caption(
             f"Tolerancia: ±${tol:.2f}  |  {n_conc} conciliados / {n_l} totales  "
-            f"|  {n_nc} NC en ARCA  |  {n_ext} exterior sin ARCA"
+            f"|  {n_nc} NC  |  {n_ext} exterior sin ARCA"
         )
 
     st.markdown("---")
@@ -485,7 +495,8 @@ if st.session_state.get("loaded"):
         with fc2:
             sel_orig = st.multiselect("Origen:", all_origenes, default=all_origenes, key="sel_orig") if all_origenes else []
         with fc3:
-            solo_nc = st.checkbox("Solo NC (ARCA)", key="solo_nc")
+            solo_nc = st.checkbox("Solo NC", key="solo_nc",
+                                  help="Notas de Crédito del Listado o de ARCA")
         with fc4:
             solo_memoria = st.checkbox("Solo memoria 📋", key="solo_memoria",
                                        help="Muestra solo filas donde se aplicó una regla guardada")
@@ -516,8 +527,21 @@ if st.session_state.get("loaded"):
             d1 = d1[d1["Estado"].isin(sel_estados)]
         if sel_orig and "Origen" in d1.columns:
             d1 = d1[d1["Origen"].isin(sel_orig)]
-        if solo_nc and "ARCA_es_NC" in d1.columns:
-            d1 = d1[d1["ARCA_es_NC"] == True]
+        if solo_nc:
+            # NC de cualquiera de los dos lados: marcada por ARCA (es_NC) o
+            # registrada como NC en el Listado (Tipo_Doc "NC A/B/C") — cubre
+            # las NC sin match en ARCA, que antes quedaban fuera del filtro.
+            _nc_arca_f = (
+                d1["ARCA_es_NC"] == True
+                if "ARCA_es_NC" in d1.columns
+                else pd.Series(False, index=d1.index)
+            )
+            _nc_listado_f = (
+                d1["Tipo_Doc"].astype(str).str.upper().str.startswith("NC")
+                if "Tipo_Doc" in d1.columns
+                else pd.Series(False, index=d1.index)
+            )
+            d1 = d1[_nc_arca_f | _nc_listado_f]
         if solo_memoria:
             d1 = d1[d1["Memoria"] == True]
 
