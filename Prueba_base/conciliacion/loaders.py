@@ -85,6 +85,15 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
             if neto_cols_a
             else pd.to_numeric(df.get("Gravado", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0)
         )
+        # No Gravado y Exento integran el neto comparable — espeja Neto_Total_ARCA
+        # (= Neto Gravado + Neto No Gravado + Op. Exentas), igual que las
+        # variantes C, Subdiario y B.Imponible.
+        _extra_neto_a = [
+            c for c in df.columns
+            if re.match(r"^(no\s*gravado|exento)s?$", str(c).lower().strip())
+        ]
+        for _enc in _extra_neto_a:
+            df["Neto"] = df["Neto"] + pd.to_numeric(df[_enc], errors="coerce").fillna(0)
         df["Total"] = pd.to_numeric(df.get("Total", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0)
 
     # ── Variante B: Comprobante "X-SSSSS-NNNNNNNN" ya construido ────────────
@@ -108,6 +117,12 @@ def _load_libro_iva(source) -> "pd.DataFrame | None":
             sum(pd.to_numeric(df[c], errors="coerce").fillna(0) for c in neto_cols_b)
             if neto_cols_b else pd.Series(0.0, index=df.index)
         )
+        _extra_neto_b = [
+            c for c in df.columns
+            if re.match(r"^(no\s*gravado|exento)s?$", str(c).lower().strip())
+        ]
+        for _enc in _extra_neto_b:
+            df["Neto"] = df["Neto"] + pd.to_numeric(df[_enc], errors="coerce").fillna(0)
         df["Total"] = pd.to_numeric(df.get("Total", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0)
 
     # ── Variante C: IvaCompras — columna "Nro Factura" con formato "FCA 00002-00021696"
