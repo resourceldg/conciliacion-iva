@@ -61,6 +61,27 @@ class TestFinalizarListado:
         agg = _finalizar_listado(df)
         assert len(agg) == 2  # un comprobante por CUIT
 
+    def test_factura_y_nc_mismo_numero_no_se_fusionan(self):
+        # Liquidaciones bancarias: factura y NC del mismo proveedor comparten
+        # número de comprobante (la numeración es por tipo).
+        df = _df_canonico(
+            Comprobante=["00001-30092025", "00001-30092025"],
+            Tipo=["FAC-A", "NCC-A"],
+            CUIT_DNI=["30-11111111-2"] * 2,
+            Fecha_Factura=["30/09/2025"] * 2,
+            Razon_Social=["BANCO SA"] * 2,
+            Condicion_IVA=["RI"] * 2,
+            Neto=[113193.33, 113193.33],
+            IVA=[23770.60, 23770.60],
+            Total=[136963.93, 136963.93],
+        )
+        agg = _finalizar_listado(df)
+        assert len(agg) == 2  # una fila por clase, no una fusionada
+        fac = agg[agg["Tipo"] == "FAC-A"].iloc[0]
+        nc  = agg[agg["Tipo"] == "NCC-A"].iloc[0]
+        assert fac["Total"] == 136963.93
+        assert nc["Total"] == -136963.93
+
     def test_etiquetas_legibles(self):
         agg = _finalizar_listado(_df_canonico())
         assert set(agg["Tipo_Doc"]) == {"Factura A", "NC A"}

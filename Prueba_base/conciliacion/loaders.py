@@ -122,10 +122,15 @@ def _finalizar_listado(
 
     # CUIT_norm como clave secundaria de agrupación: evita mezclar comprobantes
     # de distintos proveedores que coincidan en número (XXXXX-YYYYYYYY no es
-    # único entre proveedores; el par Comprobante+CUIT_norm sí lo es).
+    # único entre proveedores). Y la clase (factura vs NC) como tercera clave:
+    # la numeración es por tipo de comprobante, así que la factura y la NC del
+    # mismo proveedor pueden compartir número (típico en liquidaciones
+    # bancarias) — sin esta clave se fusionarían en una fila falsa. Espeja el
+    # agrupado por (clave, CUIT, es_NC) del lado ARCA.
     df["CUIT_norm"] = df["CUIT_DNI"].astype(str).str.replace(r"[^0-9]", "", regex=True)
+    df["_clase_nc"] = df["Tipo"].astype(str).str.upper().str.startswith("NCC")
     _agg_extra = {c: (c, "sum") for c in ot_cols + extra_sum_cols}
-    agg = df.groupby(["Comprobante", "CUIT_norm"], as_index=False).agg(
+    agg = df.groupby(["Comprobante", "CUIT_norm", "_clase_nc"], as_index=False).agg(
         Fecha_Factura=("Fecha_Factura", "first"),
         Tipo=("Tipo", "first"),
         CUIT_DNI=("CUIT_DNI", "first"),
@@ -156,7 +161,7 @@ def _finalizar_listado(
 
     agg["Tipo_Doc"] = agg["Tipo"].map(TIPO_LABEL).fillna(agg["Tipo"])
 
-    result = agg.reset_index(drop=True)
+    result = agg.drop(columns=["_clase_nc"]).reset_index(drop=True)
     result.attrs["otros_tributos_cols"] = list(ot_cols)
     return result
 
