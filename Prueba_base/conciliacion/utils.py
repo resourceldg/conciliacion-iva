@@ -19,7 +19,7 @@ import unicodedata
 
 import pandas as pd
 
-from .constants import BOOL_COLS, EXT_PREFIXES, NC_ARCA
+from .constants import BOOL_COLS, EXT_PREFIXES, NC_AFIP, NC_ARCA, TIPOS_AFIP
 
 
 def _fix_mojibake(s) -> str:
@@ -96,10 +96,59 @@ def _origen_from_cuit_tipo(cuit: str, tipo: str = "") -> str:
     return "Exterior" if cuit_clean.startswith("55") else "Nacional"
 
 
-def _es_nota_credito_arca(tipo: str) -> bool:
-    """True si el tipo de comprobante ARCA es una Nota de Crédito."""
+def _codigo_afip(tipo) -> "int | None":
+    """Extrae el código AFIP numérico del campo Tipo de ARCA.
+
+    Acepta las formas que producen los distintos exports:
+      - código crudo:        3, "3", "003", 3.0   (CSV de Mis Comprobantes)
+      - código + texto:      "3 - Nota de Crédito A"   (XLSX)
+    Retorna None si el valor no empieza con un código (ej. texto puro).
+    """
+    m = re.match(r"^0*(\d{1,3})(?:\.0+)?\s*(?:-|$)", str(tipo).strip())
+    return int(m.group(1)) if m else None
+
+
+def _tipo_doc_afip(tipo) -> str:
+    """Etiqueta legible del tipo ARCA usando la tabla oficial de códigos.
+
+    Si no se puede decodificar, retorna el valor original como string.
+    """
+    cod = _codigo_afip(tipo)
+    if cod is not None and cod in TIPOS_AFIP:
+        return TIPOS_AFIP[cod]
+    return str(tipo)
+
+
+def _es_nota_credito_arca(tipo) -> bool:
+    """True si el tipo de comprobante ARCA es una Nota de Crédito.
+
+    Primero intenta por código AFIP (cubre el CSV con código numérico y el
+    XLSX "N - Denominación"); si no hay código, busca el texto "nota de
+    crédito" como antes.
+    """
+    cod = _codigo_afip(tipo)
+    if cod is not None:
+        return cod in NC_AFIP
     t = str(tipo).lower()
     return any(nc in t for nc in NC_ARCA)
+
+
+def _to_num_ar(col: pd.Series) -> pd.Series:
+    """Convierte importes en formato argentino a float.
+
+    "1.234.567,89" → 1234567.89. Los valores ya numéricos o con punto
+    decimal (formato estándar) pasan directo. Necesario para el export CSV
+    de Mis Comprobantes, que trae los montos como texto con coma decimal.
+    """
+    if pd.api.types.is_numeric_dtype(col):
+        return pd.to_numeric(col, errors="coerce").fillna(0)
+    s = col.astype(str).str.strip()
+    con_coma = s.str.contains(",", regex=False)
+    s = s.where(
+        ~con_coma,
+        s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
+    )
+    return pd.to_numeric(s, errors="coerce").fillna(0)
 
 
 def _detectar_periodo(s1: pd.DataFrame) -> str:

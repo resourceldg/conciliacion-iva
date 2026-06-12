@@ -50,7 +50,21 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     # aparece como varias filas en ARCA (una por alícuota). Se suman Neto, IVA y
     # OtrosTrib; se toma el primer valor para Total (repetido en cada fila) y
     # para todos los campos de metadata (fecha, CUIT, denominación, etc.).
-    _dupes_arca = df_arca[df_arca.duplicated("Comprobante_Key", keep=False)]
+    #
+    # La agrupación es por (Comprobante_Key, CUIT_norm, es_NC): la clave
+    # PtoVta-Número NO es única entre emisores distintos (Facturas C de
+    # monotributistas suelen compartir punto de venta 1 y números bajos), y
+    # la numeración de ARCA es POR TIPO de comprobante — la Factura C N°1 y
+    # la NC C N°1 del mismo emisor comparten clave. Agrupar sin estos campos
+    # fusiona comprobantes distintos en una fila falsa.
+    _has_cuit_arca = "CUIT_norm" in df_arca.columns
+    _has_nc_arca   = "es_NC" in df_arca.columns
+    _group_keys_arca = ["Comprobante_Key"]
+    if _has_cuit_arca:
+        _group_keys_arca.append("CUIT_norm")
+    if _has_nc_arca:
+        _group_keys_arca.append("es_NC")
+    _dupes_arca = df_arca[df_arca.duplicated(_group_keys_arca, keep=False)]
     if not _dupes_arca.empty:
         n_keys = _dupes_arca["Comprobante_Key"].nunique()
         _warnings.append({
@@ -66,10 +80,11 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
         if _ca and _ca in df_arca.columns:
             _sum_fields_arca.add(_ca)
     _sum_c_arca   = [c for c in df_arca.columns if c in _sum_fields_arca]
-    _first_c_arca = [c for c in df_arca.columns if c not in _sum_fields_arca and c != "Comprobante_Key"]
+    _first_c_arca = [c for c in df_arca.columns
+                     if c not in _sum_fields_arca and c not in _group_keys_arca]
     _agg_arca = {c: (c, "sum") for c in _sum_c_arca}
     _agg_arca.update({c: (c, "first") for c in _first_c_arca})
-    df_arca = df_arca.groupby("Comprobante_Key", as_index=False).agg(**_agg_arca)
+    df_arca = df_arca.groupby(_group_keys_arca, as_index=False).agg(**_agg_arca)
 
     # Columnas estándar de ARCA renombradas para el JOIN
     _arca_std_rename = {
@@ -98,15 +113,31 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
                       if c in df_arca.columns]
     arca_slim = df_arca[_arca_all_cols].rename(columns={**_arca_std_rename, **_xtra_arca_rename})
 
+    # Flag NC del Listado para el JOIN: como la numeración de ARCA es por tipo,
+    # el cruce debe distinguir factura de NC para no aparear la Factura N°1
+    # con la NC N°1 del mismo emisor.
+    _tipo_l_j  = df_listado.get("Tipo",     pd.Series("", index=df_listado.index)).astype(str)
+    _tipod_l_j = df_listado.get("Tipo_Doc", pd.Series("", index=df_listado.index)).astype(str)
+    df_listado["_es_nc_l"] = (
+        _tipo_l_j.str.upper().str.startswith("NCC")
+        | _tipod_l_j.str.upper().str.startswith("NC ")
+    )
+
     # Separar nacionales y externos para JOIN diferente
     mask_ext    = (df_listado.get("Origen", pd.Series("Nacional", index=df_listado.index)) == "Exterior")
     listado_nac = df_listado[~mask_ext]
     listado_ext = df_listado[mask_ext]
 
+    _l_keys = ["Comprobante", "CUIT_norm"]
+    _r_keys = ["ARCA_Key", "ARCA_CUIT_norm"]
+    if _has_nc_arca:
+        _l_keys = _l_keys + ["_es_nc_l"]
+        _r_keys = _r_keys + ["ARCA_es_NC"]
+
     merged_nac = pd.merge(
         listado_nac, arca_slim,
-        left_on=["Comprobante", "CUIT_norm"],
-        right_on=["ARCA_Key", "ARCA_CUIT_norm"],
+        left_on=_l_keys,
+        right_on=_r_keys,
         how="left",
     )
 
@@ -124,10 +155,15 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
             _arca_for_fb = arca_slim[~arca_slim["ARCA_Key"].isin(_used_keys)]
             _unm_l       = merged_nac.loc[_unm_mask, _listado_cols].copy()
             if not _unm_l.empty and not _arca_for_fb.empty:
+                _fb_l = ["Comprobante", "NroDoc_norm"]
+                _fb_r = ["ARCA_Key", "ARCA_CUIT_norm"]
+                if _has_nc_arca and "_es_nc_l" in _unm_l.columns:
+                    _fb_l = _fb_l + ["_es_nc_l"]
+                    _fb_r = _fb_r + ["ARCA_es_NC"]
                 _fb = pd.merge(
                     _unm_l, _arca_for_fb,
-                    left_on=["Comprobante", "NroDoc_norm"],
-                    right_on=["ARCA_Key", "ARCA_CUIT_norm"],
+                    left_on=_fb_l,
+                    right_on=_fb_r,
                     how="left",
                 )
                 merged_nac = pd.concat(
@@ -143,7 +179,13 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     _unm_mask_cuit = merged_nac["ARCA_Key"].isna()
     if _unm_mask_cuit.any():
         _used_keys_c   = set(merged_nac["ARCA_Key"].dropna())
-        _arca_for_cuit = arca_slim[~arca_slim["ARCA_Key"].isin(_used_keys_c)]
+        # Este join es por clave sola: si varias filas de ARCA comparten la
+        # clave (emisores distintos), quedarse con una para no duplicar la
+        # fila del Listado — el estado será "CUIT no coincide" igualmente.
+        _arca_for_cuit = (
+            arca_slim[~arca_slim["ARCA_Key"].isin(_used_keys_c)]
+            .drop_duplicates("ARCA_Key", keep="first")
+        )
         _unm_l_c       = merged_nac.loc[_unm_mask_cuit, _listado_cols].copy()
         if not _unm_l_c.empty and not _arca_for_cuit.empty:
             _fb_cuit = pd.merge(
@@ -158,13 +200,31 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
             )
 
     merged_ext = pd.merge(
-        listado_ext, arca_slim,
+        listado_ext, arca_slim.drop_duplicates("ARCA_Key", keep="first"),
         left_on="Comprobante",
         right_on="ARCA_Key",
         how="left",
     )
     merged = pd.concat([merged_nac, merged_ext], ignore_index=True, sort=False)
     merged["Existe_en_ARCA"] = merged["ARCA_Key"].notna()
+
+    # Capturar los pares matcheados ANTES de la corrección de signo de NC:
+    # ese bloque puede mutar ARCA_es_NC y corrompería el rastreo que usa
+    # sheet3 para determinar qué filas de ARCA quedaron sin contraparte.
+    _matched_tuples: set = set()
+    if _has_cuit_arca and "ARCA_CUIT_norm" in merged.columns:
+        _m_ok = merged[merged["ARCA_Key"].notna()]
+        if _has_nc_arca and "ARCA_es_NC" in merged.columns:
+            _matched_tuples = set(zip(
+                _m_ok["ARCA_Key"].astype(str),
+                _m_ok["ARCA_CUIT_norm"].fillna("").astype(str),
+                _m_ok["ARCA_es_NC"].fillna(False).astype(bool),
+            ))
+        else:
+            _matched_tuples = set(zip(
+                _m_ok["ARCA_Key"].astype(str),
+                _m_ok["ARCA_CUIT_norm"].fillna("").astype(str),
+            ))
 
     # Corrección de signo para NC donde ARCA no detectó es_NC
     # (ocurre cuando la columna Tipo de ARCA no está mapeada o usa código numérico).
@@ -294,13 +354,36 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
         "CUIT_DNI", "Razon_Social", "Condicion_IVA", "Neto", "IVA", "Total",
     ] if c in merged.columns]].copy()
 
-    # Comprobantes solo en ARCA (no unieron en el JOIN)
-    arca_matched_keys = set(merged["ARCA_Key"].dropna())
+    # Comprobantes solo en ARCA (no unieron en el JOIN).
+    # El descarte es por par (clave, CUIT): con claves compartidas entre
+    # emisores, descartar por clave sola ocultaría las filas de los otros
+    # emisores que NO matchearon.
     keep = [c for c in [
         "Comprobante_Key", "Fecha", "Tipo_Doc_ARCA", "Nro. Doc. Emisor",
         "Denominación Emisor", "Neto Gravado Total", "Neto No Gravado", "Op. Exentas",
         "Otros Tributos", "Total IVA", "Imp. Total", "es_NC",
     ] if c in df_arca.columns]
-    sheet3 = df_arca[~df_arca["Comprobante_Key"].isin(arca_matched_keys)][keep].copy()
+    if _matched_tuples or (_has_cuit_arca and "ARCA_CUIT_norm" in merged.columns):
+        if _has_nc_arca:
+            _tuples_arca = list(zip(
+                df_arca["Comprobante_Key"].astype(str),
+                df_arca["CUIT_norm"].fillna("").astype(str),
+                df_arca["es_NC"].fillna(False).astype(bool),
+            ))
+        else:
+            _tuples_arca = list(zip(
+                df_arca["Comprobante_Key"].astype(str),
+                df_arca["CUIT_norm"].fillna("").astype(str),
+            ))
+        # Series booleana (no list): una lista vacía sería interpretada por
+        # pandas como selección de columnas y rompería con df_arca vacío.
+        _mask_solo = pd.Series(
+            [t not in _matched_tuples for t in _tuples_arca],
+            index=df_arca.index, dtype=bool,
+        )
+        sheet3 = df_arca[_mask_solo][keep].copy()
+    else:
+        arca_matched_keys = set(merged["ARCA_Key"].dropna())
+        sheet3 = df_arca[~df_arca["Comprobante_Key"].isin(arca_matched_keys)][keep].copy()
 
     return sheet1, sheet2, sheet3, _warnings

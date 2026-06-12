@@ -50,6 +50,53 @@ BOOL_COLS = {
 # ("Notas de Crédito A", export CSV de Mis Comprobantes).
 NC_ARCA = {"nota de crédito", "nota de credito", "notas de crédito", "notas de credito"}
 
+# ── Tabla oficial AFIP/ARCA de tipos de comprobante ──────────────────────────
+# Fuente: "TABLA TIPO COMPROBANTES V.0 25082010" (códigos 001-104) + códigos
+# FCE MiPyME (201-213, RG 4367/2018). El export CSV de "Mis Comprobantes"
+# trae el código numérico crudo; el XLSX trae "N - Denominación".
+
+TIPOS_AFIP: dict[int, str] = {
+    1: "Factura A", 2: "N.Débito A", 3: "N.Crédito A",
+    4: "Recibo A", 5: "NV Contado A",
+    6: "Factura B", 7: "N.Débito B", 8: "N.Crédito B",
+    9: "Recibo B", 10: "NV Contado B",
+    11: "Factura C", 12: "N.Débito C", 13: "N.Crédito C",
+    14: "Doc. Aduanero", 15: "Recibo C", 16: "NV Contado C",
+    19: "Fact. Exportación", 20: "ND Exterior", 21: "NC Exterior",
+    22: "Fact. Exp. Simplif.",
+    30: "Compra B. Usados", 31: "Mandato/Consig.", 32: "Comp. Reciclados",
+    34: "Comp. A RG1415", 35: "Comp. B RG1415", 36: "Comp. C RG1415",
+    37: "ND RG1415", 38: "NC RG1415",
+    39: "Otros A RG1415", 40: "Otros B RG1415", 41: "Otros C RG1415",
+    50: "Recibo Fact. A FC", 51: "Factura M", 52: "N.Débito M",
+    53: "N.Crédito M", 54: "Recibo M", 55: "NV Contado M",
+    56: "Comp. M RG1415", 57: "Otros M RG1415",
+    58: "Cta. Vta. M", 59: "Liquidación M",
+    60: "Cta. Vta. A", 61: "Cta. Vta. B",
+    63: "Liquidación A", 64: "Liquidación B",
+    65: "NC Liquidación",
+    66: "Desp. Importación", 67: "Import. Servicios", 68: "Liquidación C",
+    70: "Recibo Fact. Créd.", 71: "Créd. Contrib. Patr.",
+    73: "F.1116 RT", 74: "Carta Porte Autom.", 75: "Carta Porte Ferrov.",
+    80: "Cierre Z", 81: "Tique Fact. A", 82: "Tique Fact. B", 83: "Tique",
+    84: "Fact. Serv. Públicos", 85: "NC Serv. Públicos", 86: "ND Serv. Públicos",
+    87: "Otros Serv. Exterior", 88: "Remito Electrónico",
+    89: "ND Doc. Exceptuados", 90: "NC Doc. Exceptuados", 91: "Remito R",
+    92: "Ajuste +DF", 93: "Ajuste -DF", 94: "Ajuste +CF", 95: "Ajuste -CF",
+    96: "F.1116 B", 97: "F.1116 C", 99: "Otros RG3419",
+    101: "Ajuste DJ IVA (+)", 102: "Ajuste DJ IVA (-)",
+    103: "Nota Asignación", 104: "NC Asignación",
+    # FCE MiPyME (no figura en la tabla 2010; vigente desde RG 4367/2018)
+    201: "FCE A", 202: "ND FCE A", 203: "NC FCE A",
+    206: "FCE B", 207: "ND FCE B", 208: "NC FCE B",
+    211: "FCE C", 212: "ND FCE C", 213: "NC FCE C",
+}
+
+# Códigos que corresponden a Notas de Crédito → los importes se netean
+# en negativo (todas las denominaciones "NOTAS DE CREDITO..." de la tabla
+# + las NC de FCE MiPyME).
+NC_AFIP: set[int] = {3, 8, 13, 21, 38, 53, 65, 85, 90, 104, 203, 208, 213}
+
 # Prefijos Colppy que corresponden a facturas del exterior (FCC/FCE)
 EXT_PREFIXES = {"fcc-a", "fcc-b", "fcc-c", "fce-a", "fce-b", "fce-c"}
 
@@ -150,9 +197,12 @@ ALIASES_ARCA: dict[str, list[str]] = {
                         "documento emisor", "cuit/dni emisor"],
     "denominacion":    ["denominacion emisor", "denominación emisor",
                         "razon social emisor", "denominacion", "razon social"],
-    "neto_gravado":    ["neto gravado total", "neto gravado", "neto grav total", "neto grav"],
-    "neto_no_gravado": ["neto no gravado", "neto no grav"],
-    "op_exentas":      ["op exentas", "op. exentas", "operaciones exentas", "exentas"],
+    "neto_gravado":    ["neto gravado total", "neto gravado", "neto grav total", "neto grav",
+                        "imp neto gravado total", "imp. neto gravado total"],
+    "neto_no_gravado": ["neto no gravado", "neto no grav",
+                        "imp neto no gravado", "imp. neto no gravado"],
+    "op_exentas":      ["op exentas", "op. exentas", "operaciones exentas", "exentas",
+                        "imp op exentas", "imp. op. exentas"],
     "otros_tributos":  ["otros tributos", "otros trib", "tributos"],
     "total_iva":       ["total iva", "iva", "imp iva", "importe iva"],
     "total":           ["imp total", "imp. total", "total", "importe total", "total importe"],

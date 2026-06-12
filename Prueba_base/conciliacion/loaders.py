@@ -29,7 +29,10 @@ from .constants import (
     CAMPOS_ARCA, CAMPOS_LISTADO, MAPEOS_DEFAULT,
 )
 from .file_reader import _mejor_hoja, _find_header, leer_excel, _detectar_formato_colppy
-from .utils import _agg_total, _combinar_cols, _es_nota_credito_arca, _fix_mojibake, _origen_from_cuit_tipo
+from .utils import (
+    _agg_total, _combinar_cols, _es_nota_credito_arca, _fix_mojibake,
+    _origen_from_cuit_tipo, _tipo_doc_afip, _to_num_ar,
+)
 
 
 def _load_libro_iva(source) -> "pd.DataFrame | None":
@@ -890,6 +893,8 @@ def load_listado_iva(source, mapeo: dict | None = None):
         "FAC-A": "Factura A", "FAC-B": "Factura B", "FAC-C": "Factura C",
         "FCC-A": "Ext. A", "FCC-B": "Ext. B", "FCC-C": "Ext. C",
         "NCC-A": "NC A", "NCC-B": "NC B", "NCC-C": "NC C",
+        "NDC-A": "ND A", "NDC-B": "ND B", "NDC-C": "ND C",
+        "NDB-A": "ND A", "NDB-B": "ND B", "NDB-C": "ND C",
         "FCA-A": "FC Elect. A",
     }
     agg["Tipo_Doc"] = agg["Tipo"].map(tipo_label).fillna(agg["Tipo"])
@@ -944,6 +949,41 @@ def load_arca(source, mapeo: dict | None = None):
 
     # Pre-combinar campos multi-columna (ej: IVA = IVA 21% + IVA 10.5% + ...)
     c = dict(mapeo["columnas"])
+
+    # ── Fallbacks para el export CSV de Mis Comprobantes ─────────────────────
+    # El CSV usa nombres con prefijo "Imp." y "Fecha de Emisión"/"Tipo de
+    # Comprobante" en lugar de los nombres del XLSX. Si la columna mapeada
+    # (o el default) no existe, probar las variantes conocidas.
+    _CSV_VARIANTES = {
+        "neto_gravado":    ["Imp. Neto Gravado Total"],
+        "neto_no_gravado": ["Imp. Neto No Gravado"],
+        "op_exentas":      ["Imp. Op. Exentas"],
+        "fecha":           ["Fecha de Emisión", "Fecha de Emision"],
+        "tipo":            ["Tipo de Comprobante"],
+    }
+    for _fld, _alts in _CSV_VARIANTES.items():
+        _cur = c.get(_fld)
+        if not _cur or _cur not in df.columns:
+            for _alt in _alts:
+                if _alt in df.columns:
+                    c[_fld] = _alt
+                    break
+
+    # ── Importes como texto (CSV con coma decimal) → float ───────────────────
+    # Convierte todas las columnas de importe reconocibles antes de cualquier
+    # combinación o aritmética. Las columnas ya numéricas pasan directo.
+    _NUM_COL_RE = re.compile(
+        r"^(iva\s*[\d,.]|imp\.?\s*neto|imp\.?\s*op|neto\s|op\.?\s*exentas"
+        r"|otros\s*tributos|total\s*iva|imp\.?\s*total|tipo\s*cambio)",
+        re.IGNORECASE,
+    )
+    for _col in df.columns:
+        if (
+            isinstance(_col, str)
+            and _NUM_COL_RE.match(_col.strip().lower())
+            and not pd.api.types.is_numeric_dtype(df[_col])
+        ):
+            df[_col] = _to_num_ar(df[_col])
     for _fld, _std in [("total_iva", "Total IVA"), ("total", "Imp. Total")]:
         _spec = c.get(_fld)
         if isinstance(_spec, list) and len(_spec) > 1:
@@ -960,7 +1000,7 @@ def load_arca(source, mapeo: dict | None = None):
     ]
     for col_i in COLS_IMPORTE:
         if col_i in df.columns:
-            df[col_i] = pd.to_numeric(df[col_i], errors="coerce").fillna(0)
+            df[col_i] = _to_num_ar(df[col_i])
 
     # Fallback al nombre estándar si el mapeo viene vacío (campo opcional sin
     # mapear en la UI): sin Tipo no se detectan las NC y los importes de ARCA
@@ -993,7 +1033,7 @@ def load_arca(source, mapeo: dict | None = None):
     for _xc in mapeo.get("extra_cols", []):
         _xcol_a = _xc.get("col_a", "")
         if _xcol_a and _xcol_a in df.columns and _xcol_a not in COLS_IMPORTE:
-            df[_xcol_a] = pd.to_numeric(df[_xcol_a], errors="coerce").fillna(0) * signo * tc_factor
+            df[_xcol_a] = _to_num_ar(df[_xcol_a]) * signo * tc_factor
 
     c_ng  = c.get("neto_gravado",    "Neto Gravado Total") or "Neto Gravado Total"
     c_nng = c.get("neto_no_gravado", "Neto No Gravado")    or "Neto No Gravado"
@@ -1008,7 +1048,7 @@ def load_arca(source, mapeo: dict | None = None):
     # dtype-strict assignment de pandas 2.x (TypeError: Invalid value for dtype 'float64').
     for _ec in {c_ng, c_nng, c_oe, c_ot, c_tiva, c_tot}:
         if _ec and _ec in df.columns and not pd.api.types.is_float_dtype(df[_ec]):
-            df[_ec] = pd.to_numeric(df[_ec], errors="coerce").fillna(0)
+            df[_ec] = _to_num_ar(df[_ec])
 
     df["Neto_Total_ARCA"] = (
         df.get(c_ng,  pd.Series(0, index=df.index))
@@ -1049,19 +1089,10 @@ def load_arca(source, mapeo: dict | None = None):
     _solo_exento = (_c_ng_s <= 0.01) & ((_c_nng_s + _c_oe_s) > 0.01)
     df["neto_derivado"] = sin_desglose | _doble_conteo | _solo_exento
 
-    tipo_label_arca = {
-        "1 - Factura A":         "Factura A",
-        "2 - Nota de Débito A":  "N.Débito A",
-        "3 - Nota de Crédito A": "N.Crédito A",
-        "6 - Factura B":         "Factura B",
-        "7 - Nota de Débito B":  "N.Débito B",
-        "8 - Nota de Crédito B": "N.Crédito B",
-        "11 - Factura C":        "Factura C",
-        "12 - Nota de Débito C": "N.Débito C",
-        "13 - Nota de Crédito C": "N.Crédito C",
-    }
+    # Etiqueta legible vía tabla oficial AFIP: cubre código numérico crudo
+    # (CSV), "N - Denominación" (XLSX) y deja el valor original si no decodifica.
     if col_tipo and col_tipo in df.columns:
-        df["Tipo_Doc_ARCA"] = df[col_tipo].map(tipo_label_arca).fillna(df[col_tipo])
+        df["Tipo_Doc_ARCA"] = df[col_tipo].map(_tipo_doc_afip)
     else:
         df["Tipo_Doc_ARCA"] = ""
 
