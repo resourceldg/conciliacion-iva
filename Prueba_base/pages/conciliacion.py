@@ -583,11 +583,26 @@ if st.session_state.get("loaded"):
             column_config=COL_CFG,
         )
 
-        tc1, tc2 = st.columns([2, 6])
+        tc1, tc_xl, tc2 = st.columns([2, 2, 4])
         with tc1:
             _csv_download(
                 d1_disp, f"⬇ CSV filtrado ({len(d1_disp)} filas)",
                 f"conciliacion_filtrada_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            )
+        with tc_xl:
+            # Excel con la hoja Conciliación recortada a los filtros activos.
+            # Se filtra s1_export (estados crudos + correcciones + reglas) por
+            # los índices de d1: misma selección de filas que muestra la tabla.
+            _s1_filtrado = s1_export.loc[d1.index]
+            st.download_button(
+                f"⬇ Excel filtrado ({len(_s1_filtrado)} filas)",
+                data=generar_excel(_s1_filtrado, s2, s3),
+                file_name=f"ConciliacionIVA_filtrado_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dl_excel_filtrado",
+                help="3 hojas; la hoja Conciliación incluye solo las filas filtradas. "
+                     "Solo Listado y Solo ARCA van completas.",
             )
         with tc2:
             st.caption(
