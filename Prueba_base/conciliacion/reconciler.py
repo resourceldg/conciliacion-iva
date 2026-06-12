@@ -358,9 +358,12 @@ def conciliar(df_listado, df_arca, tolerancia: float, extra_cols=None):
     # El descarte es por par (clave, CUIT): con claves compartidas entre
     # emisores, descartar por clave sola ocultaría las filas de los otros
     # emisores que NO matchearon.
+    # Neto_Total_ARCA es el neto comparable (incluye el derivado de Factura C
+    # y NC sin desglose) — es "la columna de neto" que muestran las otras hojas.
     keep = [c for c in [
         "Comprobante_Key", "Fecha", "Tipo_Doc_ARCA", "Nro. Doc. Emisor",
-        "Denominación Emisor", "Neto Gravado Total", "Neto No Gravado", "Op. Exentas",
+        "Denominación Emisor", "Neto_Total_ARCA",
+        "Neto Gravado Total", "Neto No Gravado", "Op. Exentas",
         "Otros Tributos", "Total IVA", "Imp. Total", "es_NC",
     ] if c in df_arca.columns]
     if _matched_tuples or (_has_cuit_arca and "ARCA_CUIT_norm" in merged.columns):

@@ -792,6 +792,7 @@ if st.session_state.get("loaded"):
             d3_disp, use_container_width=True, height=400, hide_index=True,
             column_config={
                 "es_NC":              st.column_config.TextColumn("NC", width="small"),
+                "Neto_Total_ARCA":    st.column_config.NumberColumn("Neto",         format="$ %.2f"),
                 "Neto Gravado Total": st.column_config.NumberColumn("Neto Gravado", format="$ %.2f"),
                 "Total IVA":          st.column_config.NumberColumn("IVA",          format="$ %.2f"),
                 "Imp. Total":         st.column_config.NumberColumn("Total",        format="$ %.2f"),

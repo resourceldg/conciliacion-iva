@@ -833,8 +833,11 @@ def load_arca(source, mapeo: dict | None = None):
     c_fecha = c.get("fecha") or "Fecha"
     c_cuit  = c.get("cuit_emisor") or "Nro. Doc. Emisor"
     c_denom = c.get("denominacion") or "Denominación Emisor"
+    # Incluye las columnas de neto: el CSV las llama "Imp. Neto Gravado Total"
+    # etc. y sin el rename desaparecen de la hoja "Solo en ARCA".
     col_std = {
         c_tiva: "Total IVA", c_ot: "Otros Tributos", c_tot: "Imp. Total",
+        c_ng: "Neto Gravado Total", c_nng: "Neto No Gravado", c_oe: "Op. Exentas",
     }
     if c_fecha and c_fecha in df.columns:
         col_std[c_fecha] = "Fecha"

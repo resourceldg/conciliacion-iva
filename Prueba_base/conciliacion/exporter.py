@@ -16,6 +16,7 @@ Convenciones de color en el Excel:
 Todas las hojas tienen encabezado fijo (freeze panes) y autofiltro activado.
 El ancho de columna se ajusta automáticamente al contenido.
 """
+import datetime as _dt
 from io import BytesIO
 
 import pandas as pd
@@ -37,6 +38,7 @@ def generar_excel(s1, s2, s3) -> bytes:
         f_ok  = wb.add_format({"bg_color": "#dcfce7", "font_color": "#15803d", "bold": True, "align": "center"})
         f_ko  = wb.add_format({"bg_color": "#fee2e2", "font_color": "#b91c1c", "bold": True, "align": "center"})
         f_num = wb.add_format({"num_format": "#,##0.00"})
+        f_fecha = wb.add_format({"num_format": "dd/mm/yyyy"})
         f_dok = wb.add_format({"num_format": "#,##0.00", "bg_color": "#dcfce7"})
         f_dko = wb.add_format({"num_format": "#,##0.00", "bg_color": "#fee2e2"})
         f_neg = wb.add_format({"num_format": "#,##0.00", "font_color": "#dc2626"})
@@ -75,6 +77,10 @@ def generar_excel(s1, s2, s3) -> bytes:
                             ws.write_number(r, c, v, f_neg if v < 0 else f_num)
                         except (TypeError, ValueError):
                             ws.write(r, c, "" if nan else val)
+                    elif isinstance(val, (_dt.datetime, _dt.date)) and not nan:
+                        # Sin formato explícito, xlsxwriter muestra el número
+                        # de serie (45846) en lugar de la fecha.
+                        ws.write_datetime(r, c, val, f_fecha)
                     else:
                         ws.write(r, c, "" if nan else val)
             for c, col in enumerate(df.columns):
@@ -89,8 +95,8 @@ def generar_excel(s1, s2, s3) -> bytes:
         wsheet(s1, "Conciliación",    bool_cols=BOOL1, num_cols=NUM1, diff_cols=DIFF)
         wsheet(s2, "Solo en Listado", num_cols={"Neto", "IVA", "Total"})
         wsheet(s3, "Solo en ARCA",
-               num_cols={"Neto Gravado Total", "Neto No Gravado", "Op. Exentas",
-                         "Otros Tributos", "Total IVA", "Imp. Total"},
+               num_cols={"Neto_Total_ARCA", "Neto Gravado Total", "Neto No Gravado",
+                         "Op. Exentas", "Otros Tributos", "Total IVA", "Imp. Total"},
                bool_cols={"es_NC"})
 
     return buf.getvalue()
